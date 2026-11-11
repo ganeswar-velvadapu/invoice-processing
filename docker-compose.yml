@@ -1,0 +1,60 @@
+# Local development stack. PostgreSQL is external (Neon): set DATABASE_URL in .env.
+# Original files live in a named volume mounted at /data/storage (outside the source tree) — include it in backups.
+services:
+  api:
+    build: ./backend
+    command: ["api"]
+    env_file: .env
+    environment:
+      STORAGE_DIR: /data/storage
+    volumes:
+      - storage:/data/storage
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+
+  worker:
+    build: ./backend
+    command: ["worker"]
+    env_file: .env
+    environment:
+      STORAGE_DIR: /data/storage
+    volumes:
+      - storage:/data/storage
+    depends_on:
+      - api   # api applies migrations on start
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        BACKEND_URL: http://api:8080
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  # Local vision model (optional). Started only with the "vlm" profile:
+  #   docker compose --profile vlm up -d ollama      (see scripts/setup_vlm.sh)
+  # Runs entirely on this machine; documents never leave it. Remove with:
+  #   docker compose rm -sf ollama && docker volume rm invoice-processing_ollama-models
+  ollama:
+    image: ollama/ollama:${OLLAMA_VERSION:-0.40.11}
+    profiles: ["vlm"]
+    volumes:
+      - ollama-models:/root/.ollama          # downloaded models survive restarts
+    ports:
+      - "127.0.0.1:11434:11434"              # reachable from this machine only (for testing)
+    environment:
+      OLLAMA_NUM_PARALLEL: "1"               # one page at a time
+      OLLAMA_MAX_LOADED_MODELS: "1"
+      OLLAMA_KEEP_ALIVE: "10m"               # unload the model (free RAM) after 10 idle minutes
+    cpus: "${OLLAMA_CPUS:-6}"                # leave the other cores for you
+    mem_limit: "${OLLAMA_MEM_LIMIT:-7g}"
+    restart: unless-stopped
+
+volumes:
+  storage:
+  ollama-models:

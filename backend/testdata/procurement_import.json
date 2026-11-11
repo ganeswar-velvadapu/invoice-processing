@@ -1,0 +1,81 @@
+{
+  "goods_receipt_notes": [
+    {
+      "grn_number": "GRN-5002",
+      "items": [
+        {
+          "description": "MCB Double Pole 32A",
+          "item_code": "MCB-32A",
+          "line_number": 1,
+          "quantity_accepted": 40,
+          "quantity_received": 40,
+          "quantity_rejected": 0,
+          "unit_of_measure": "Nos"
+        },
+        {
+          "description": "Copper Cable 4 sq mm (90m)",
+          "item_code": "CBL-4SQ",
+          "line_number": 2,
+          "quantity_accepted": 10,
+          "quantity_received": 10,
+          "quantity_rejected": 0,
+          "unit_of_measure": "Roll"
+        }
+      ],
+      "po_number": "PO-1002",
+      "receipt_date": "2026-10-18",
+      "vendor_gstin": "29AABCB5521K1ZN"
+    }
+  ],
+  "purchase_orders": [
+    {
+      "buyer_entity": "Inno Manufacturing Ltd",
+      "currency": "INR",
+      "items": [
+        {
+          "description": "MCB Double Pole 32A",
+          "hsn_sac": "85362030",
+          "item_code": "MCB-32A",
+          "line_number": 1,
+          "quantity_ordered": 40,
+          "tax_rate": 18,
+          "unit_of_measure": "Nos",
+          "unit_price": 525
+        },
+        {
+          "description": "Copper Cable 4 sq mm (90m)",
+          "hsn_sac": "85444999",
+          "item_code": "CBL-4SQ",
+          "line_number": 2,
+          "quantity_ordered": 10,
+          "tax_rate": 18,
+          "unit_of_measure": "Roll",
+          "unit_price": 6150
+        }
+      ],
+      "po_date": "2026-10-05",
+      "po_number": "PO-1002",
+      "vendor_gstin": "29AABCB5521K1ZN"
+    }
+  ],
+  "vendors": [
+    {
+      "address": "Pune, Maharashtra",
+      "gstin": "27AAPFU0939F1ZV",
+      "is_approved": true,
+      "legal_name": "Acme Industrial Supplies Pvt Ltd"
+    },
+    {
+      "address": "Bengaluru, Karnataka",
+      "gstin": "29AABCB5521K1ZN",
+      "is_approved": true,
+      "legal_name": "Bharat Electricals \u0026 Controls"
+    },
+    {
+      "address": "Ahmedabad",
+      "gstin": "24AAKCS7788M1ZE",
+      "is_approved": false,
+      "legal_name": "Shree Packaging Works"
+    }
+  ]
+}

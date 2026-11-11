@@ -1,0 +1,18 @@
+file,layout,vendor,invoice_number,po_number,grand_total,expected_decision,why
+01_shakti_clean.pdf,classic,Shakti Steel Traders,SST/26-27/0871,PO/26-27/0412,196423.00,APPROVE,"Everything matches PO and GRN (inter-state, IGST)."
+02_shakti_price_above_po.pdf,classic,Shakti Steel Traders,SST/26-27/0884,PO/26-27/0415,84901.00,HOLD,MS Flat billed at 74.25/kg against PO price 69.75 (PRICE_MISMATCH).
+03_bharat_clean.pdf,tally,Bharat Electricals & Controls,BEC/26-27/778,PO/26-27/0418,116324.00,APPROVE,"Tally-style bill, intra-state CGST + SGST; matches PO and GRN."
+04_bharat_short_receipt.pdf,tally,Bharat Electricals & Controls,BEC/26-27/791,PO/26-27/0421,91686.00,HOLD,Bills 60 LED panels but the GRN accepted only 54 (6 rejected): QUANTITY_EXCEEDS_GRN.
+05_orion_eight_lines.pdf,modern,Orion Packaging Solutions LLP,OPS-2026-1187,PO/26-27/0425,519143.00,APPROVE,"Modern layout, 8 lines with mixed 18% and 12% GST; matches PO and GRN."
+06_orion_wrong_tax_rate.pdf,modern,Orion Packaging Solutions LLP,OPS-2026-1203,PO/26-27/0428,67884.00,HOLD,Boxes charged at 12% GST where the PO says 18% (TAX_RATE_MISMATCH).
+07_nilgiri_hsn_summary.pdf,grid,Nilgiri Lab & Safety Supplies,NLS/1456/26-27,PO/26-27/0430,148620.00,APPROVE,Boxed layout with an HSN-wise tax summary under the items; matches.
+08_nilgiri_goods_not_received.pdf,grid,Nilgiri Lab & Safety Supplies,NLS/1471/26-27,PO/26-27/0433,63712.00,PENDING_DOCUMENTS,PO exists but nothing has been received yet (GRN_NOT_RECEIVED); clears when a GRN arrives.
+09_ganga_handwritten.pdf,handwritten,Ganga Office Mart,GOM-0342,PO/26-27/0436,44961.00,APPROVE or REVIEW,"Handwritten bill-book scan, read by the vision model. Approves if every field is read and reconciles; otherwise REVIEW for a clerk to confirm."
+10_kaveri_handwritten.pdf,handwritten2,Kaveri Tools & Hardware,KTH/219,PO/26-27/0439,40745.00,APPROVE or REVIEW,"Second handwriting style, slightly skewed scan; vision model."
+11_apex_unknown_vendor.pdf,classic,Apex Industrial Traders,AIT/26-27/0055,,49005.00,PENDING_DOCUMENTS,"Supplier is not in the vendor master (VENDOR_NOT_FOUND) and no PO exists (PO_NOT_FOUND); waits for procurement, never auto-approved."
+12_bharat_split_part1.pdf,tally,Bharat Electricals & Controls,BEC/26-27/805,PO/26-27/0442,160008.00,APPROVE,"Edge 1: first partial invoice on PO/26-27/0442 (18 of 30 cable rolls, 6 of 10 boards)."
+13_bharat_split_part2.pdf,tally,Bharat Electricals & Controls,BEC/26-27/812,PO/26-27/0442,106672.00,APPROVE,Edge 1: second partial invoice closes the PO exactly (cumulative 30 and 10).
+14_bharat_split_overbill.pdf,tally,Bharat Electricals & Controls,BEC/26-27/819,PO/26-27/0442,36285.00,HOLD,"Edge 1: looks fine alone, but the PO is already fully invoiced (QUANTITY_EXCEEDS_PO / GRN)."
+15_nilgiri_no_po_number.pdf,grid,Nilgiri Lab & Safety Supplies,NLS/1488/26-27,,75225.00,APPROVE,"Edge 2: no PO reference; PO/26-27/0445 is the only open PO of this supplier matching every line, so it is used and the reasoning shown."
+16_shakti_no_po_ambiguous.pdf,classic,Shakti Steel Traders,SST/26-27/0902,,21476.00,REVIEW,"Edge 2: no PO reference and two identical open POs (0447, 0448): the system will not guess; the clerk picks one and it re-checks to APPROVE."
+17_bharat_renumbered_duplicate.pdf,tally,Bharat Electricals & Controls,BEC/26-27/778A,PO/26-27/0418,116324.00,HOLD,"Edge 3: same bill as 03 re-sent as 778A (same supplier, date, amount): POSSIBLE_DUPLICATE, and the PO is already fully invoiced."

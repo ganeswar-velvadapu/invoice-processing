@@ -1,0 +1,6 @@
+grn_number,po_number,vendor_gstin,receipt_date,line_number,item_code,description,quantity_received,quantity_accepted,quantity_rejected,unit_of_measure
+GRN/26-27/1074,PO/26-27/0451,24AAGFO8812Q1ZP,2026-11-06,1,CB-3P,Corrugated Box 3 Ply 400x300x300,1500,1500,0,Nos
+GRN/26-27/1074,PO/26-27/0451,24AAGFO8812Q1ZP,2026-11-06,2,SF-23,Stretch Film 23 micron 500mm,60,60,0,Roll
+GRN/26-27/1074,PO/26-27/0451,24AAGFO8812Q1ZP,2026-11-06,3,BT-48,BOPP Tape 48mm x 65m Brown,400,400,0,Nos
+GRN/26-27/1075,PO/26-27/0453,29AABCB5521K1ZN,2026-11-07,1,LED-36W,LED Panel Light 36W 2x2,30,30,0,Nos
+GRN/26-27/1075,PO/26-27/0453,29AABCB5521K1ZN,2026-11-07,2,CTR-25,Power Contactor 25A 3P,8,8,0,Nos

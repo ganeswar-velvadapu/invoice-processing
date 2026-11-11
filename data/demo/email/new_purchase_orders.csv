@@ -1,0 +1,6 @@
+po_number,vendor_gstin,po_date,buyer_entity,currency,po_status,line_number,item_code,description,hsn_sac,quantity_ordered,unit_of_measure,unit_price,tax_rate
+PO/26-27/0451,24AAGFO8812Q1ZP,2026-10-27,Inno Manufacturing Ltd,INR,APPROVED,1,CB-3P,Corrugated Box 3 Ply 400x300x300,48191010,1500,Nos,22.40,18
+PO/26-27/0451,24AAGFO8812Q1ZP,2026-10-27,Inno Manufacturing Ltd,INR,APPROVED,2,SF-23,Stretch Film 23 micron 500mm,39201012,60,Roll,465.00,18
+PO/26-27/0451,24AAGFO8812Q1ZP,2026-10-27,Inno Manufacturing Ltd,INR,APPROVED,3,BT-48,BOPP Tape 48mm x 65m Brown,39191000,400,Nos,38.00,18
+PO/26-27/0453,29AABCB5521K1ZN,2026-10-28,Inno Manufacturing Ltd,INR,APPROVED,1,LED-36W,LED Panel Light 36W 2x2,94054900,30,Nos,1120.00,18
+PO/26-27/0453,29AABCB5521K1ZN,2026-10-28,Inno Manufacturing Ltd,INR,APPROVED,2,CTR-25,Power Contactor 25A 3P,85364900,8,Nos,1340.00,18

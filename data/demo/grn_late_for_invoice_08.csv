@@ -1,0 +1,3 @@
+grn_number,po_number,vendor_gstin,receipt_date,line_number,item_code,description,quantity_received,quantity_accepted,quantity_rejected,unit_of_measure
+GRN/26-27/1072,PO/26-27/0433,33AAHCN4471L1Z7,2026-11-10,1,NG-M,Nitrile Gloves Medium (box of 100),80,80,0,Box
+GRN/26-27/1072,PO/26-27/0433,33AAHCN4471L1Z7,2026-11-10,2,SH-YL,Safety Helmet Yellow with Ratchet,100,100,0,Nos
