@@ -286,32 +286,3 @@ func mergePage(m, p *VLMDoc, page int) {
 	lastNum(&m.RoundOff, p.RoundOff, "round_off")
 	lastNum(&m.GrandTotal, p.GrandTotal, "grand_total")
 }
-
-// ExtractTextLayer returns only the text embedded in a PDF (no OCR). Pages without a text layer
-// are skipped; images yield an empty result. Used to cross-check the vision model's output.
-func (e *Extractor) ExtractTextLayer(ctx context.Context, path, mime string) (*Result, error) {
-	if mime != "application/pdf" {
-		return &Result{Method: MethodPDFText, PageCount: 1}, nil
-	}
-	out, err := run(ctx, 2*time.Minute, e.PdftotextBin, "-layout", "-enc", "UTF-8", path, "-")
-	if err != nil {
-		return nil, err
-	}
-	pages := strings.Split(string(out), "\f")
-	if len(pages) > 1 && strings.TrimSpace(pages[len(pages)-1]) == "" {
-		pages = pages[:len(pages)-1]
-	}
-	res := &Result{Method: MethodPDFText, PageCount: len(pages), MeanConfidence: 100}
-	for i, p := range pages {
-		if alnumCount(p) < e.MinPageChars {
-			res.OCRPages = append(res.OCRPages, i+1) // here: pages WITHOUT a usable text layer
-			continue
-		}
-		for _, l := range strings.Split(p, "\n") {
-			if strings.TrimSpace(l) != "" {
-				res.Lines = append(res.Lines, Line{Page: i + 1, Text: strings.TrimRight(l, " \t")})
-			}
-		}
-	}
-	return res, nil
-}

@@ -1,13 +1,12 @@
-// Package extract turns a stored PDF/image into layout-preserving text lines.
-// PDF embedded text is used first; pages without usable text are rendered and OCR'd with Tesseract.
-// OCR sits behind the OCREngine interface so it can be swapped without touching parsing or matching.
+// Package extract turns a stored document into layout-preserving text lines and, for scans, hands
+// page images to the local vision model (vlm.go). There is no OCR: a digital PDF's own text layer is
+// read with pdftotext; documents without one are read by the vision model.
 package extract
 
 import (
 	"bytes"
 	"context"
 	"fmt"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -15,25 +14,21 @@ import (
 	"unicode"
 )
 
-const (
-	MethodPDFText = "PDF_TEXT"
-	MethodOCR     = "OCR"
-)
+const MethodPDFText = "PDF_TEXT"
 
-// Line is one visual line of text. BBox is [x0,y0,x1,y1] in page pixels when known (OCR only).
+// Line is one visual line of text. BBox and Conf are optional (unused for PDF text).
 type Line struct {
 	Page int     `json:"page"`
 	Text string  `json:"text"`
 	BBox *[4]int `json:"bbox,omitempty"`
-	Conf float64 `json:"conf,omitempty"` // mean OCR word confidence 0-100, 0 if not OCR
+	Conf float64 `json:"conf,omitempty"`
 }
 
 type Result struct {
-	Method         string // PDF_TEXT if every page had text, else OCR (mixed counts as OCR)
-	PageCount      int
-	Lines          []Line
-	OCRPages       []int
-	MeanConfidence float64 // mean OCR confidence across OCR'd words (0-100); 100 for pure PDF text
+	Method       string
+	PageCount    int
+	Lines        []Line
+	ScannedPages []int // pages without a usable text layer (scans): only the vision model can read them
 }
 
 func (r *Result) Text() string {
@@ -50,16 +45,11 @@ func (r *Result) Text() string {
 	return b.String()
 }
 
-// OCREngine recognises one page image.
-type OCREngine interface {
-	RecognizeImage(ctx context.Context, imagePath string, page int) ([]Line, float64, error)
-}
+// FullTextLayer reports whether every page has embedded text.
+func (r *Result) FullTextLayer() bool { return len(r.Lines) > 0 && len(r.ScannedPages) == 0 }
 
 type Extractor struct {
 	PdftotextBin string
-	PdftoppmBin  string
-	OCR          OCREngine
-	DPI          int
 	// MinPageChars is the number of alphanumeric chars below which a page is treated as scanned.
 	MinPageChars int
 }
@@ -87,21 +77,12 @@ func alnumCount(s string) int {
 	return n
 }
 
+// Extract returns the text embedded in a PDF. Pages without a text layer are listed in ScannedPages;
+// an image file is one scanned page with no text.
 func (e *Extractor) Extract(ctx context.Context, path, mime string) (*Result, error) {
-	if mime == "application/pdf" {
-		return e.extractPDF(ctx, path)
+	if mime != "application/pdf" {
+		return &Result{Method: MethodPDFText, PageCount: 1, ScannedPages: []int{1}}, nil
 	}
-	if e.OCR == nil {
-		return nil, fmt.Errorf("OCR engine not configured")
-	}
-	lines, conf, err := e.OCR.RecognizeImage(ctx, path, 1)
-	if err != nil {
-		return nil, err
-	}
-	return &Result{Method: MethodOCR, PageCount: 1, Lines: lines, OCRPages: []int{1}, MeanConfidence: conf}, nil
-}
-
-func (e *Extractor) extractPDF(ctx context.Context, path string) (*Result, error) {
 	out, err := run(ctx, 2*time.Minute, e.PdftotextBin, "-layout", "-enc", "UTF-8", path, "-")
 	if err != nil {
 		return nil, err
@@ -111,54 +92,16 @@ func (e *Extractor) extractPDF(ctx context.Context, path string) (*Result, error
 		pages = pages[:len(pages)-1]
 	}
 	res := &Result{Method: MethodPDFText, PageCount: len(pages)}
-	var confSum float64
-	var confN int
 	for i, p := range pages {
-		pageNo := i + 1
-		if alnumCount(p) >= e.MinPageChars {
-			for _, l := range strings.Split(p, "\n") {
-				if strings.TrimSpace(l) != "" {
-					res.Lines = append(res.Lines, Line{Page: pageNo, Text: strings.TrimRight(l, " \t")})
-				}
-			}
+		if alnumCount(p) < e.MinPageChars {
+			res.ScannedPages = append(res.ScannedPages, i+1)
 			continue
 		}
-		if e.OCR == nil {
-			return nil, fmt.Errorf("page %d has no embedded text and OCR is not configured", pageNo)
+		for _, l := range strings.Split(p, "\n") {
+			if strings.TrimSpace(l) != "" {
+				res.Lines = append(res.Lines, Line{Page: i + 1, Text: strings.TrimRight(l, " \t")})
+			}
 		}
-		lines, conf, err := e.ocrPDFPage(ctx, path, pageNo)
-		if err != nil {
-			return nil, fmt.Errorf("ocr page %d: %w", pageNo, err)
-		}
-		res.Lines = append(res.Lines, lines...)
-		res.OCRPages = append(res.OCRPages, pageNo)
-		confSum += conf
-		confN++
-	}
-	if confN > 0 {
-		res.Method = MethodOCR
-		res.MeanConfidence = confSum / float64(confN)
-	} else {
-		res.MeanConfidence = 100
 	}
 	return res, nil
-}
-
-func (e *Extractor) ocrPDFPage(ctx context.Context, path string, page int) ([]Line, float64, error) {
-	dir, err := os.MkdirTemp("", "ocr-*")
-	if err != nil {
-		return nil, 0, err
-	}
-	defer os.RemoveAll(dir)
-	dpi := e.DPI
-	if dpi == 0 {
-		dpi = 300
-	}
-	prefix := filepath.Join(dir, "p")
-	pg := fmt.Sprint(page)
-	if _, err := run(ctx, 2*time.Minute, e.PdftoppmBin, "-r", fmt.Sprint(dpi), "-gray", "-png",
-		"-f", pg, "-l", pg, "-singlefile", path, prefix); err != nil {
-		return nil, 0, err
-	}
-	return e.OCR.RecognizeImage(ctx, prefix+".png", page)
 }

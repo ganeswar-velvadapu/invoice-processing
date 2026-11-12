@@ -23,11 +23,8 @@ type Config struct {
 	WorkerPoll        time.Duration
 	WorkerConcurrency int
 	BuyerGSTINs       []string // our own company GSTINs, helps tell seller from buyer
-	TesseractBin      string
 	PdftotextBin      string
 	PdftoppmBin       string
-	OCRLang           string
-	OCREngine         string
 	GSTINChecksum     string
 	ExtractionEngine  string // rules | vlm | hybrid
 	OllamaURL         string
@@ -35,9 +32,6 @@ type Config struct {
 	VLMPageTimeout    time.Duration
 	VLMMaxPx          int
 	JobTimeout        time.Duration
-	PaddlePython      string
-	PaddleScript      string
-	PaddleModel       string
 	RunWorkerInAPI    bool
 	// Email ingestion (IMAP). Enabled when host, user and password are all set.
 	IMAPHost     string
@@ -110,18 +104,12 @@ func Load() (*Config, error) {
 		AdminPassword:    env("ADMIN_PASSWORD", ""),
 		CORSOrigins:      list("CORS_ORIGINS"),
 		BuyerGSTINs:      list("BUYER_GSTINS"),
-		TesseractBin:     env("TESSERACT_BIN", "tesseract"),
 		PdftotextBin:     env("PDFTOTEXT_BIN", "pdftotext"),
 		PdftoppmBin:      env("PDFTOPPM_BIN", "pdftoppm"),
-		OCRLang:          env("OCR_LANG", "eng"),
-		OCREngine:        env("OCR_ENGINE", "tesseract"),
 		GSTINChecksum:    env("GSTIN_CHECKSUM", "strict"),
 		ExtractionEngine: env("EXTRACTION_ENGINE", "rules"),
 		OllamaURL:        env("OLLAMA_URL", "http://ollama:11434"),
 		VLMModel:         env("VLM_MODEL", "qwen3-vl:4b-instruct"),
-		PaddlePython:     env("PADDLE_PYTHON", "python3"),
-		PaddleScript:     env("PADDLE_OCR_SCRIPT", "ocr/paddle_ocr_server.py"),
-		PaddleModel:      env("PADDLE_OCR_MODEL", "mobile"),
 		RunWorkerInAPI:   env("RUN_WORKER_IN_API", "false") == "true",
 		IMAPHost:         env("IMAP_HOST", ""),
 		IMAPUser:         env("IMAP_USER", ""),

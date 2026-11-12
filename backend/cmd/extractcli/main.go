@@ -32,10 +32,7 @@ func main() {
 	case ".tif", ".tiff":
 		mime = "image/tiff"
 	}
-	ex := &extract.Extractor{PdftotextBin: "pdftotext", PdftoppmBin: "pdftoppm", MinPageChars: 40,
-		OCR: extract.NewEngine(envOr("OCR_ENGINE", "tesseract"), "tesseract", "eng", envOr("PADDLE_PYTHON", "python3"),
-			envOr("PADDLE_OCR_SCRIPT", "ocr/paddle_ocr_server.py"), envOr("PADDLE_OCR_MODEL", "mobile"),
-			func(err error) { fmt.Fprintln(os.Stderr, "paddleocr failed, using tesseract:", err) })}
+	ex := &extract.Extractor{PdftotextBin: "pdftotext", MinPageChars: 40}
 	r, err := ex.Extract(context.Background(), path, mime)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -52,7 +49,7 @@ func main() {
 	// BUYER_GSTINS / VENDOR_GSTINS (comma-separated) stand in for config and the vendor master.
 	d := parse.Parse(r.Lines, c.DocumentType, parse.Options{BuyerGSTINs: list("BUYER_GSTINS"), VendorGSTINs: list("VENDOR_GSTINS")})
 	d.ClassificationConfidence = c.Confidence
-	out := map[string]any{"reconcile_problems": parse.ReconcileProblems(d, r.Lines), "method": r.Method, "ocr_conf": r.MeanConfidence, "classification": c, "data": d,
+	out := map[string]any{"reconcile_problems": parse.ReconcileProblems(d, r.Lines), "method": r.Method, "scanned_pages": r.ScannedPages, "classification": c, "data": d,
 		"overall_confidence": parse.OverallConfidence(d), "low_confidence": parse.LowConfidence(d, 0.75)}
 	b, _ := json.MarshalIndent(out, "", "  ")
 	fmt.Println(string(b))
@@ -66,11 +63,4 @@ func list(env string) []string {
 		}
 	}
 	return out
-}
-
-func envOr(k, def string) string {
-	if v := os.Getenv(k); v != "" {
-		return v
-	}
-	return def
 }

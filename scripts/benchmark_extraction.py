@@ -74,7 +74,7 @@ def main():
         if got == exp:
             cls_ok[key] += 1
         else:
-            wrong.append(f"{rel}: {got} (ocr {round(r.get('ocr_conf', 0))})")
+            wrong.append(f"{rel}: {got}")
         stem = os.path.splitext(os.path.basename(rel))[0]
         if stem not in gt or "data" not in r:
             continue

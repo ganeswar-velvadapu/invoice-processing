@@ -70,10 +70,7 @@ func run(mode string, log *slog.Logger) error {
 		return fmt.Errorf("storage: %w", err)
 	}
 	svc := &service.Service{DB: d, Store: store, Cfg: cfg, Log: log,
-		Extractor: &extract.Extractor{PdftotextBin: cfg.PdftotextBin, PdftoppmBin: cfg.PdftoppmBin, MinPageChars: 40, DPI: 300,
-			OCR: extract.NewEngine(cfg.OCREngine, cfg.TesseractBin, cfg.OCRLang, cfg.PaddlePython, cfg.PaddleScript, cfg.PaddleModel,
-				func(err error) { log.Warn("PaddleOCR failed, falling back to Tesseract", "err", err) })}}
-	log.Info("ocr engine", "engine", cfg.OCREngine, "model", cfg.PaddleModel)
+		Extractor: &extract.Extractor{PdftotextBin: cfg.PdftotextBin, MinPageChars: 40}}
 	if cfg.ExtractionEngine != "rules" {
 		svc.VLM = &extract.VLM{URL: cfg.OllamaURL, Model: cfg.VLMModel, PageTimeout: cfg.VLMPageTimeout, MaxPx: cfg.VLMMaxPx,
 			PdftoppmBin: cfg.PdftoppmBin}

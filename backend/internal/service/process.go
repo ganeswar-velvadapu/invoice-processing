@@ -28,7 +28,7 @@ func (s *Service) setStage(ctx context.Context, docID, status, stage string) {
 //
 // EXTRACTION_ENGINE decides how the document is read (everything after reading is identical):
 //
-//	rules   embedded PDF text, OCR for scans, rule-based parsing (no AI)
+//	rules   embedded PDF text, rule-based parsing (no AI); scans cannot be read
 //	vlm     every document is transcribed by the local vision model; no OCR
 //	hybrid  PDFs with a full text layer are parsed by rules first; scans, and documents whose
 //	        critical fields the rules are unsure about, go to the vision model; no OCR
@@ -47,7 +47,7 @@ func (s *Service) ProcessDocument(ctx context.Context, docID string) error {
 		return s.processWithVision(ctx, d, full)
 	}
 
-	// 1. text extraction (embedded PDF text first, OCR for image-only pages)
+	// 1. text extraction (the PDF's own text layer; scans need the vision model)
 	s.setStage(ctx, docID, "EXTRACTION_PENDING", "extracting text")
 	res, err := s.Extractor.Extract(ctx, full, d.mime)
 	if err != nil {
@@ -55,6 +55,9 @@ func (s *Service) ProcessDocument(ctx context.Context, docID string) error {
 	}
 	texts := lineTexts(res.Lines)
 	if len(strings.TrimSpace(strings.Join(texts, ""))) == 0 {
+		if len(res.ScannedPages) > 0 {
+			return fmt.Errorf("scanned document without a text layer: it can only be read by the vision model (set EXTRACTION_ENGINE=hybrid)")
+		}
 		return fmt.Errorf("no text could be extracted (blank or unreadable document)")
 	}
 
@@ -62,7 +65,7 @@ func (s *Service) ProcessDocument(ctx context.Context, docID string) error {
 	s.setStage(ctx, docID, "CLASSIFICATION_PENDING", "classifying")
 	cls := classify.Classify(texts)
 	docType, typeConf, err := s.applyType(ctx, d, cls.DocumentType, cls.Confidence, res.PageCount, res.Method,
-		map[string]any{"classification": cls, "ocr_pages": res.OCRPages, "ocr_mean_confidence": res.MeanConfidence})
+		map[string]any{"classification": cls, "scanned_pages": res.ScannedPages})
 	if err != nil {
 		return err
 	}
@@ -73,8 +76,8 @@ func (s *Service) ProcessDocument(ctx context.Context, docID string) error {
 	data.ClassificationConfidence = typeConf
 	data.ExtractedBy = "rules"
 
-	ocrConf := res.MeanConfidence
-	return s.saveAndMaterialize(ctx, docID, docType, res.Method, res.Text(), data, &ocrConf, "")
+	full100 := 100.0
+	return s.saveAndMaterialize(ctx, docID, docType, res.Method, res.Text(), data, &full100, "")
 }
 
 func lineTexts(ls []extract.Line) []string {
@@ -122,12 +125,12 @@ func (s *Service) applyType(ctx context.Context, d docRow, detected string, conf
 // when present, is used for the rules fast path (hybrid) and to verify the model's values.
 func (s *Service) processWithVision(ctx context.Context, d docRow, full string) error {
 	s.setStage(ctx, d.id, "EXTRACTION_PENDING", "reading text layer")
-	tl, err := s.Extractor.ExtractTextLayer(ctx, full, d.mime)
+	tl, err := s.Extractor.Extract(ctx, full, d.mime)
 	if err != nil {
 		return fmt.Errorf("text layer: %w", err)
 	}
 	texts := lineTexts(tl.Lines)
-	fullTextLayer := len(tl.Lines) > 0 && len(tl.OCRPages) == 0 // every page has embedded text
+	fullTextLayer := tl.FullTextLayer()
 
 	// hybrid fast path: digital PDFs whose critical fields the rules read confidently
 	if s.Cfg.ExtractionEngine == "hybrid" && fullTextLayer {
