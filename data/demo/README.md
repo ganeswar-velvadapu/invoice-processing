@@ -2,14 +2,6 @@
 
 Buyer: **Inno Manufacturing Ltd**, GSTIN `29AAACI1234F1ZY` (Bengaluru, Karnataka). There are six suppliers in five invoice layouts, and every invoice is planned against the master data so its outcome is known in advance. The edge cases (12–17) use the same ordinary POs and GRNs as everything else: there is nothing special to import for them.
 
-Regenerate the whole set with:
-
-```bash
-~/Practice/invoice-generator/invoice-generator/bin/python scripts/build_demo_set.py
-```
-
-It needs Playwright, ImageMagick and img2pdf, plus internet access for the handwriting fonts.
-
 ## 1. Master data (admin or manager → Imports)
 
 Import these in order, choosing the matching type for each:

@@ -18,7 +18,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 MODEL="${VLM_MODEL:-qwen3-vl:4b-instruct}"
-TEST_PDF="${1:-/home/ganeswar/Practice/invoice-generator/output/goods_receipt_notes/clean/grn_000004.pdf}"
+TEST_PDF="${1:-data/demo/invoices/09_ganga_handwritten.pdf}"
 
 step() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 

@@ -6,8 +6,8 @@ Every invoice is planned against the master data so its expected decision is kno
 data/demo/README.md). Rendering uses Playwright's Chromium; handwritten pages use Google Fonts and are
 rasterised with ImageMagick (rotation, blur, noise) and img2pdf so they have no text layer.
 
-Usage: <python with playwright> scripts/build_demo_set.py [out_dir]
-  e.g. ~/Practice/invoice-generator/invoice-generator/bin/python scripts/build_demo_set.py
+Usage: python3 scripts/build_demo_set.py [out_dir]
+  (needs the playwright package with Chromium, ImageMagick and img2pdf)
 """
 import csv, html, math, os, random, shutil, subprocess, sys, tempfile
 from dataclasses import dataclass, field
