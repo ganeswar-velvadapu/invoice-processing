@@ -37,7 +37,7 @@ All files except 09 and 10 are digital PDFs. They take the fast path (text layer
 
 ## Good demo moments
 
-- **08 → import a GRN for PO/26-27/0433** (add rows to a CSV and import it). The invoice moves from PENDING to APPROVE without anyone touching it.
+- **08 → the goods arrive:** a manager imports `later/grn_for_invoice_08.csv` as goods receipt notes (or uploads `later/grn_for_invoice_08.pdf`). The invoice moves from PENDING to APPROVE without anyone touching it.
 - **04**: the clerk opens the PO/GRN comparison, marks the exception as checked ("6 panels returned, credit note requested") and sends it for approval with a recommendation to reject or approve. The manager decides.
 - **Upload 01 again**: HOLD for DUPLICATE_INVOICE.
 - **09 or 10**: open Extraction to see the model's reading next to the original. If anything was unsure, the clerk corrects it and the invoice is re-checked.
