@@ -20,8 +20,10 @@ import (
 // transcribes what is printed into a fixed JSON schema; all arithmetic, validation and decisions
 // stay in our deterministic code (parse.FromVLM and the validate/match/decision packages).
 type VLM struct {
-	URL          string        // e.g. http://ollama:11434
-	Model        string        // e.g. qwen3-vl:4b-instruct
+	Provider     string        // "local" (Ollama, documents stay on this machine) or "cloud" (OpenAI-compatible API, see cloud.go)
+	URL          string        // local: http://ollama:11434; cloud: e.g. https://generativelanguage.googleapis.com/v1beta/openai
+	APIKey       string        // cloud only
+	Model        string        // e.g. qwen3-vl:4b-instruct or gemini-3.5-flash-lite
 	PageTimeout  time.Duration // per page (CPU inference is slow)
 	MaxPx        int           // longest side of the rendered page sent to the model
 	PdftoppmBin  string
@@ -193,6 +195,17 @@ func (v *VLM) page(ctx context.Context, imgPath string, n, total int, hint strin
 	if err != nil {
 		return nil, err
 	}
+	prompt := fmt.Sprintf(vlmPrompt, n, total, hint)
+	timeout := v.PageTimeout
+	if timeout == 0 {
+		timeout = 10 * time.Minute
+	}
+	pctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	if v.Provider == "cloud" {
+		return v.pageCloud(pctx, img, prompt)
+	}
+
 	numCtx := v.ContextLimit
 	if numCtx == 0 {
 		numCtx = 16384
@@ -203,16 +216,10 @@ func (v *VLM) page(ctx context.Context, imgPath string, n, total int, hint strin
 		"format":  vlmSchema,
 		"options": map[string]any{"temperature": 0, "num_ctx": numCtx, "num_predict": 6144},
 		"messages": []map[string]any{{
-			"role": "user", "content": fmt.Sprintf(vlmPrompt, n, total, hint),
+			"role": "user", "content": prompt,
 			"images": []string{base64.StdEncoding.EncodeToString(img)},
 		}},
 	})
-	timeout := v.PageTimeout
-	if timeout == 0 {
-		timeout = 10 * time.Minute
-	}
-	pctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
 	req, _ := http.NewRequestWithContext(pctx, http.MethodPost, strings.TrimRight(v.URL, "/")+"/api/chat", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	client := v.HTTP

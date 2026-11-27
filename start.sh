@@ -127,6 +127,13 @@ step() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 MODEL="$(getenv VLM_MODEL | tr -d '"'"'")"; MODEL="${MODEL:-qwen3-vl:4b-instruct}"
 OLLAMA_IMAGE="ollama/ollama:$(getenv OLLAMA_VERSION | tr -d '"'"'")"; [ "$OLLAMA_IMAGE" = "ollama/ollama:" ] && OLLAMA_IMAGE="ollama/ollama:0.40.11"
 
+PROVIDER="$(getenv VLM_PROVIDER | tr -d '"'"'")"; PROVIDER="${PROVIDER:-local}"
+PROFILE="--profile vlm"
+if [ "$PROVIDER" = cloud ]; then
+  step "Vision model: cloud ($(getenv LLM_MODEL)); scanned pages are sent to the provider, so Ollama is skipped"
+  [ -n "$(getenv LLM_API_KEY)" ] || fail "VLM_PROVIDER=cloud needs LLM_API_KEY in $ENV_FILE"
+  PROFILE=""
+else
 step "Ollama (vision model server)"
 if docker image inspect "$OLLAMA_IMAGE" >/dev/null 2>&1; then
   echo "image $OLLAMA_IMAGE present"
@@ -152,9 +159,10 @@ else
   [ "$avail_gb" -ge 4 ] || fail "not enough free disk space"
   docker compose --profile vlm exec -T ollama ollama pull "$MODEL"
 fi
+fi
 
 step "Building and starting the backend (api) and frontend"
-docker compose --profile vlm up -d --build --remove-orphans
+docker compose $PROFILE up -d --build --remove-orphans
 
 step "Waiting for the API (creates the database tables on start)"
 for _ in $(seq 1 90); do

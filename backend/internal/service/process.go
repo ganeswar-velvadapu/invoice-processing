@@ -175,7 +175,7 @@ func (s *Service) readDocument(ctx context.Context, database *sql.DB, d docRow, 
 		}
 	}
 	docType, typeConf, err := s.applyType(ctx, database, d, detected, conf, max(vd.Pages, tl.PageCount), "vision model "+s.VLM.Model,
-		map[string]any{"engine": "vlm", "model": s.VLM.Model, "model_type": vd.DocumentType, "seconds": int(vd.Duration.Seconds())})
+		map[string]any{"engine": "vlm", "provider": s.VLM.Provider, "model": s.VLM.Model, "model_type": vd.DocumentType, "seconds": int(vd.Duration.Seconds())})
 	if err != nil {
 		return err
 	}
@@ -183,6 +183,9 @@ func (s *Service) readDocument(ctx context.Context, database *sql.DB, d docRow, 
 	data := parse.FromVLM(vd, docType, tl.Lines, opt)
 	data.ClassificationConfidence = typeConf
 	data.ExtractedBy = "vlm:" + s.VLM.Model
+	if s.VLM.Provider == "cloud" {
+		data.ExtractedBy = "vlm:cloud:" + s.VLM.Model // shown on the document page, so it is clear the file left this machine
+	}
 	return s.saveAndMaterialize(ctx, database, d.id, docType, "VLM", tl.Text(), data, nil, "")
 }
 

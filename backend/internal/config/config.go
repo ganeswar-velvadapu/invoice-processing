@@ -24,10 +24,14 @@ type Config struct {
 	PdftotextBin   string
 	PdftoppmBin    string
 	GSTINChecksum  string
+	VLMProvider    string // local (Ollama, private) or cloud (OpenAI-compatible API such as Gemini)
 	OllamaURL      string
 	VLMModel       string
 	VLMPageTimeout time.Duration
 	VLMMaxPx       int
+	LLMBaseURL     string // cloud only
+	LLMAPIKey      string
+	LLMModel       string
 	// Email ingestion (IMAP). Enabled when host, user and password are all set.
 	IMAPHost     string
 	IMAPPort     int
@@ -104,6 +108,10 @@ func Load() (*Config, error) {
 		GSTINChecksum: env("GSTIN_CHECKSUM", "strict"),
 		OllamaURL:     env("OLLAMA_URL", "http://ollama:11434"),
 		VLMModel:      env("VLM_MODEL", "qwen3-vl:4b-instruct"),
+		VLMProvider:   env("VLM_PROVIDER", "local"),
+		LLMBaseURL:    env("LLM_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai"),
+		LLMAPIKey:     env("LLM_API_KEY", ""),
+		LLMModel:      env("LLM_MODEL", "gemini-3.5-flash-lite"),
 		IMAPHost:      env("IMAP_HOST", ""),
 		IMAPUser:      env("IMAP_USER", ""),
 		IMAPPassword:  strings.ReplaceAll(env("IMAP_PASSWORD", ""), " ", ""), // Google shows app passwords in groups of four
@@ -133,6 +141,12 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("VLM_PAGE_TIMEOUT: %w", err)
 	}
 	c.VLMMaxPx, _ = strconv.Atoi(env("VLM_MAX_PX", "1600"))
+	if c.VLMProvider != "local" && c.VLMProvider != "cloud" {
+		return nil, fmt.Errorf("VLM_PROVIDER must be local or cloud")
+	}
+	if c.VLMProvider == "cloud" && c.LLMAPIKey == "" {
+		return nil, fmt.Errorf("VLM_PROVIDER=cloud needs LLM_API_KEY")
+	}
 	if c.DatabaseURL == "" {
 		return nil, fmt.Errorf("DATABASE_URL is required")
 	}

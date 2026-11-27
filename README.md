@@ -2,7 +2,7 @@
 
 Invoices arrive in any layout, by upload or email, even handwritten. The system reads each one, matches it against its **purchase order (PO)** and **goods receipt note (GRN)**, and gives a clear decision with the reason behind it. People handle the exceptions, and every step is recorded.
 
-- Digital PDFs are read from their own text in seconds. Scans and handwritten bills are read by a **vision model running locally**, so documents never leave the machine.
+- Digital PDFs are read from their own text in seconds. Scans and handwritten bills are read by a vision model: **local** by default (Qwen3-VL through Ollama, documents never leave the machine), or a **cloud model** such as Gemini if you choose (faster, but scans are sent to the provider). See [Choosing the vision model](#choosing-the-vision-model-local-or-cloud).
 - Decisions come from **fixed rules**, not AI: the same invoice always gets the same decision, with a written reason.
 - Edge cases covered: split billing on one PO, missing or ambiguous PO numbers, duplicates (same file, same number, or re-numbered), unknown vendors, wrong GST rates, goods not yet received, and misread scans ("it knows when it doesn't know").
 
@@ -46,7 +46,7 @@ Uploads and emails both enter through **ingest**, which stores the file and answ
 | Step | Package | What it does | Example (invoice 02, price above PO) |
 |---|---|---|---|
 | **ingest** | `service/ingest.go` | Checks the file type by its content (PDF, PNG, JPEG, TIFF), fingerprints it with SHA-256 so exact duplicates are caught, stores it, and marks it "not read yet" | `02_shakti_price_above_po.pdf` saved |
-| **extract** | `extract/` | **Digital PDF:** `pdftotext` copies out the text stored inside the file (exact, under a second). **Scan or handwriting:** each page becomes an image for the local vision model, Qwen3-VL through Ollama (a few minutes) | lines like `Invoice No. SST/26-27/0884` |
+| **extract** | `extract/` | **Digital PDF:** `pdftotext` copies out the text stored inside the file (exact, under a second). **Scan or handwriting:** each page becomes an image for the vision model: local Qwen3-VL through Ollama (a few minutes) or a cloud model such as Gemini (seconds) | lines like `Invoice No. SST/26-27/0884` |
 | **classify** | `classify/` | Decides whether it's an invoice, a PO or a GRN from its title, and checks the type the uploader chose | `INVOICE, 99%` |
 | **parse** | `parse/` | Turns the text into fields: invoice number, dates, GSTINs, line items, tax and totals. A rules reading is trusted only if the numbers add up (`reconcile.go`); otherwise the vision model reads the document instead | `items: MS Flat 600 kg @ 74.25 …` |
 | **validate** | `validate/` + `gstin/` | Checks the invoice on its own: required fields, GSTIN format and checksum, vendor known and approved, IGST vs CGST + SGST, arithmetic, duplicates | `GSTIN_FORMAT PASS`, `DUPLICATE_INVOICE PASS` |
@@ -86,7 +86,7 @@ After that, people take over: exceptions can be *checked* (explained, still coun
 | Background work | goroutines + a channel inside the backend; unfinished work is recorded in the database (no Redis, no separate worker) |
 | Database | PostgreSQL on **Neon** (only `DATABASE_URL` is needed) |
 | Files | Local storage in a Docker volume (`invoice-processing_storage`) |
-| Reading | Poppler (`pdftotext`, `pdftoppm`); Ollama + Qwen3-VL 4B for scans and handwriting |
+| Reading | Poppler (`pdftotext`, `pdftoppm`); Ollama + Qwen3-VL 4B for scans and handwriting, or any OpenAI-compatible cloud model (default Gemini 3.5 Flash-Lite) |
 | Email | IMAP (`emersion/go-imap`) |
 | Frontend | Next.js 16, TypeScript, Tailwind 4 |
 | Login | JWT (HS256) and bcrypt; roles checked in the backend |
@@ -127,7 +127,7 @@ After that, people take over: exceptions can be *checked* (explained, still coun
 
 | Package | Files |
 |---|---|
-| `internal/extract/` | `extract.go` (the PDF's own text via `pdftotext`), `vlm.go` (page images → Ollama → fields) |
+| `internal/extract/` | `extract.go` (the PDF's own text via `pdftotext`), `vlm.go` (page images → Ollama → fields), `cloud.go` (the same page images → a cloud model, e.g. Gemini) |
 | `internal/classify/` | `classify.go` (invoice, PO or GRN from title words), `fuzzy.go` (tolerates misspelled titles) |
 | `internal/parse/` | `parse.go` (main reader and totals), `anchors.go` (values next to or under labels), `table.go` (item tables and their columns), `values.go` (numbers and dates), `types.go` (the result types and confidence), `reconcile.go` (do the numbers add up?), `vlm.go` (cleans up and cross-checks the vision model's answer) |
 | `internal/gstin/` | `gstin.go`: GSTIN format, check character, near-miss repair |
@@ -204,7 +204,7 @@ bash start.sh
 On the first run it:
 1. checks that Docker is installed and running;
 2. creates `backend/.env` (and `frontend/.env`) and asks for the database connection string, an admin email and password, and (optionally) a Gmail address and app password for email ingestion. It generates the `JWT_SECRET` itself;
-3. downloads the Ollama image and the Qwen3-VL model if they aren't there yet;
+3. downloads the Ollama image and the Qwen3-VL model if they aren't there yet (skipped with `VLM_PROVIDER=cloud`);
 4. builds and starts the frontend and the backend.
 
 When it finishes, open http://localhost:3000, sign in as the admin, and create a clerk and a manager under **Settings**.
@@ -246,9 +246,37 @@ This cleans the project off your machine and **starts nothing** (it asks you to 
 **`backend/.env`**: everything the Go backend needs.
 - **Required:** `DATABASE_URL` (Neon, `sslmode=require`), `JWT_SECRET`, `ADMIN_EMAIL`, `ADMIN_PASSWORD`.
 - **Recommended:** `BUYER_GSTINS` (your company's GSTIN) and `GSTIN_CHECKSUM=strict`.
+- **Vision model (optional):** `VLM_PROVIDER=local` (default) or `cloud` with `LLM_API_KEY` and `LLM_MODEL`; see [Choosing the vision model](#choosing-the-vision-model-local-or-cloud).
 - **Email (optional):** `IMAP_HOST=imap.gmail.com`, `IMAP_USER`, `IMAP_PASSWORD`. For Gmail, turn on 2-Step Verification and create an **App password** at myaccount.google.com/apppasswords.
 
 **`frontend/.env`**: only `BACKEND_URL`, where the frontend forwards `/api` requests (`http://localhost:8080` for `npm run dev`). In Docker it is set at build time to `http://api:8080`, so this file isn't used there.
+
+### Choosing the vision model: local or cloud
+
+Typed PDFs are always read on your machine by the rules. Only **scans, handwriting and PDFs whose numbers don't add up** go to a vision model, and you choose which one in `backend/.env`:
+
+| | `VLM_PROVIDER=local` (default) | `VLM_PROVIDER=cloud` |
+|---|---|---|
+| Model | Qwen3-VL 4B through Ollama, in Docker | any OpenAI-compatible model; default **Gemini 3.5 Flash-Lite** |
+| **Privacy** | **documents never leave your machine** | scanned pages are sent to the provider |
+| Speed | a few minutes per page on CPU | a few seconds per page |
+| Machine | ~11 GB download, 7 GB RAM for the model | no model to download, small RAM |
+| Cost | free | Gemini free tier: about 15 requests a minute, 500 a day (one request per page); paid tier ~$0.002 per page |
+
+**If you need privacy, use the local model.** Use a cloud model only when it's fine for the documents to leave your machine. On Gemini's free tier, Google may use what you send to improve its products, so use it for demo data, or turn on billing for real invoices.
+
+To use Gemini, create an API key in [Google AI Studio](https://aistudio.google.com/apikey) and set:
+
+```bash
+VLM_PROVIDER=cloud
+LLM_API_KEY=your-key
+LLM_MODEL=gemini-3.5-flash-lite
+# LLM_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai   (the default)
+```
+
+**Another model or provider** needs no code: `cloud.go` uses the OpenAI-compatible chat API, which most providers offer. Change the three settings, for example `LLM_BASE_URL=https://api.openai.com/v1` with an OpenAI key and model, or `https://openrouter.ai/api/v1` for OpenRouter. The model must accept images.
+
+The same checks run either way (reconciliation, arithmetic, GSTIN, matching), so a misread number is caught and sent to review. If the model fails or the free quota runs out, the reader waits and retries on "too many requests", and otherwise the document falls back to the rules reading for a person to check. The document page shows which model read it (`cloud:gemini-…` for a cloud model). With `VLM_PROVIDER=cloud`, `start.sh` skips Ollama and the model download.
 
 ### Everyday commands
 
@@ -326,4 +354,4 @@ python3 scripts/e2e_smoke.py http://localhost:8080
 - **Suggest other open POs** when the PO printed on an invoice is already fully billed.
 - **Flag changed POs on re-import** (e.g. a price changed), and alert on emails from senders that don't match a known vendor.
 - Credit notes, MRNs and e-way bills are stored but not used in matching yet.
-- The local vision model takes a few minutes per page on CPU; a GPU or a hosted model would make scans near-instant.
+- The local vision model takes a few minutes per page on CPU; a GPU, or `VLM_PROVIDER=cloud`, makes scans near-instant.

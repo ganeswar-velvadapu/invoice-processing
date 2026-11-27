@@ -25,7 +25,7 @@ import (
 type Service struct {
 	Store     *storage.FS        // original files
 	Extractor *extract.Extractor // reads a PDF's own text
-	VLM       *extract.VLM       // local vision model (Ollama) for scans and unsure readings
+	VLM       *extract.VLM       // vision model for scans and unsure readings: local (Ollama) or cloud
 	Cfg       *config.Config
 }
 
@@ -39,12 +39,18 @@ func New(cfg *config.Config) (*Service, error) {
 	if gstin.ChecksumMode() != "strict" {
 		slog.Warn("GSTIN checksum not enforced", "mode", gstin.ChecksumMode())
 	}
+	vlm := &extract.VLM{Provider: "local", URL: cfg.OllamaURL, Model: cfg.VLMModel, PageTimeout: cfg.VLMPageTimeout,
+		MaxPx: cfg.VLMMaxPx, PdftoppmBin: cfg.PdftoppmBin}
+	if cfg.VLMProvider == "cloud" {
+		// scanned pages are sent to the cloud provider; typed PDFs are still read on this machine
+		vlm.Provider, vlm.URL, vlm.APIKey, vlm.Model = "cloud", cfg.LLMBaseURL, cfg.LLMAPIKey, cfg.LLMModel
+	}
+	slog.Info("vision model", "provider", vlm.Provider, "model", vlm.Model)
 	return &Service{
 		Store:     store,
 		Extractor: &extract.Extractor{PdftotextBin: cfg.PdftotextBin, MinPageChars: 40},
-		VLM: &extract.VLM{URL: cfg.OllamaURL, Model: cfg.VLMModel, PageTimeout: cfg.VLMPageTimeout, MaxPx: cfg.VLMMaxPx,
-			PdftoppmBin: cfg.PdftoppmBin},
-		Cfg: cfg,
+		VLM:       vlm,
+		Cfg:       cfg,
 	}, nil
 }
 
