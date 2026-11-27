@@ -11,28 +11,23 @@ import (
 )
 
 type Config struct {
-	DatabaseURL       string
-	ListenAddr        string
-	StorageDir        string
-	JWTSecret         string
-	JWTTTL            time.Duration
-	MaxUploadBytes    int64
-	AdminEmail        string
-	AdminPassword     string
-	CORSOrigins       []string
-	WorkerPoll        time.Duration
-	WorkerConcurrency int
-	BuyerGSTINs       []string // our own company GSTINs, helps tell seller from buyer
-	PdftotextBin      string
-	PdftoppmBin       string
-	GSTINChecksum     string
-	ExtractionEngine  string // rules | vlm | hybrid
-	OllamaURL         string
-	VLMModel          string
-	VLMPageTimeout    time.Duration
-	VLMMaxPx          int
-	JobTimeout        time.Duration
-	RunWorkerInAPI    bool
+	DatabaseURL    string
+	ListenAddr     string
+	StorageDir     string
+	JWTSecret      string
+	JWTTTL         time.Duration
+	MaxUploadBytes int64
+	AdminEmail     string
+	AdminPassword  string
+	CORSOrigins    []string
+	BuyerGSTINs    []string // our own company GSTINs, helps tell seller from buyer
+	PdftotextBin   string
+	PdftoppmBin    string
+	GSTINChecksum  string
+	OllamaURL      string
+	VLMModel       string
+	VLMPageTimeout time.Duration
+	VLMMaxPx       int
 	// Email ingestion (IMAP). Enabled when host, user and password are all set.
 	IMAPHost     string
 	IMAPPort     int
@@ -96,26 +91,24 @@ func Load() (*Config, error) {
 	LoadDotEnv(".env", "../.env")
 	var err error
 	c := &Config{
-		DatabaseURL:      env("DATABASE_URL", ""),
-		ListenAddr:       env("LISTEN_ADDR", ":8080"),
-		StorageDir:       env("STORAGE_DIR", "../data/storage"),
-		JWTSecret:        env("JWT_SECRET", ""),
-		AdminEmail:       env("ADMIN_EMAIL", "admin@example.com"),
-		AdminPassword:    env("ADMIN_PASSWORD", ""),
-		CORSOrigins:      list("CORS_ORIGINS"),
-		BuyerGSTINs:      list("BUYER_GSTINS"),
-		PdftotextBin:     env("PDFTOTEXT_BIN", "pdftotext"),
-		PdftoppmBin:      env("PDFTOPPM_BIN", "pdftoppm"),
-		GSTINChecksum:    env("GSTIN_CHECKSUM", "strict"),
-		ExtractionEngine: env("EXTRACTION_ENGINE", "rules"),
-		OllamaURL:        env("OLLAMA_URL", "http://ollama:11434"),
-		VLMModel:         env("VLM_MODEL", "qwen3-vl:4b-instruct"),
-		RunWorkerInAPI:   env("RUN_WORKER_IN_API", "false") == "true",
-		IMAPHost:         env("IMAP_HOST", ""),
-		IMAPUser:         env("IMAP_USER", ""),
-		IMAPPassword:     strings.ReplaceAll(env("IMAP_PASSWORD", ""), " ", ""), // Google shows app passwords in groups of four
-		IMAPFolder:       env("IMAP_FOLDER", "INBOX"),
-		IMAPTLS:          env("IMAP_TLS", "true") != "false",
+		DatabaseURL:   env("DATABASE_URL", ""),
+		ListenAddr:    env("LISTEN_ADDR", ":8080"),
+		StorageDir:    env("STORAGE_DIR", "../data/storage"),
+		JWTSecret:     env("JWT_SECRET", ""),
+		AdminEmail:    env("ADMIN_EMAIL", "admin@example.com"),
+		AdminPassword: env("ADMIN_PASSWORD", ""),
+		CORSOrigins:   list("CORS_ORIGINS"),
+		BuyerGSTINs:   list("BUYER_GSTINS"),
+		PdftotextBin:  env("PDFTOTEXT_BIN", "pdftotext"),
+		PdftoppmBin:   env("PDFTOPPM_BIN", "pdftoppm"),
+		GSTINChecksum: env("GSTIN_CHECKSUM", "strict"),
+		OllamaURL:     env("OLLAMA_URL", "http://ollama:11434"),
+		VLMModel:      env("VLM_MODEL", "qwen3-vl:4b-instruct"),
+		IMAPHost:      env("IMAP_HOST", ""),
+		IMAPUser:      env("IMAP_USER", ""),
+		IMAPPassword:  strings.ReplaceAll(env("IMAP_PASSWORD", ""), " ", ""), // Google shows app passwords in groups of four
+		IMAPFolder:    env("IMAP_FOLDER", "INBOX"),
+		IMAPTLS:       env("IMAP_TLS", "true") != "false",
 	}
 	if c.IMAPPort, err = strconv.Atoi(env("IMAP_PORT", "993")); err != nil {
 		return nil, fmt.Errorf("IMAP_PORT: %w", err)
@@ -136,31 +129,10 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("MAX_UPLOAD_MB: %w", err)
 	}
 	c.MaxUploadBytes = mb << 20
-	poll, err := time.ParseDuration(env("WORKER_POLL_INTERVAL", "2s"))
-	if err != nil {
-		return nil, fmt.Errorf("WORKER_POLL_INTERVAL: %w", err)
-	}
-	c.WorkerPoll = poll
-	switch c.ExtractionEngine {
-	case "rules", "vlm", "hybrid":
-	default:
-		return nil, fmt.Errorf("EXTRACTION_ENGINE must be rules, vlm or hybrid")
-	}
 	if c.VLMPageTimeout, err = time.ParseDuration(env("VLM_PAGE_TIMEOUT", "10m")); err != nil {
 		return nil, fmt.Errorf("VLM_PAGE_TIMEOUT: %w", err)
 	}
 	c.VLMMaxPx, _ = strconv.Atoi(env("VLM_MAX_PX", "1600"))
-	defJob := "10m"
-	if c.ExtractionEngine != "rules" {
-		defJob = "60m" // CPU vision inference takes minutes per page
-	}
-	if c.JobTimeout, err = time.ParseDuration(env("JOB_TIMEOUT", defJob)); err != nil {
-		return nil, fmt.Errorf("JOB_TIMEOUT: %w", err)
-	}
-	c.WorkerConcurrency, _ = strconv.Atoi(env("WORKER_CONCURRENCY", "2"))
-	if c.WorkerConcurrency < 1 {
-		c.WorkerConcurrency = 1
-	}
 	if c.DatabaseURL == "" {
 		return nil, fmt.Errorf("DATABASE_URL is required")
 	}

@@ -49,7 +49,7 @@ func sniff(head []byte) (mime, ext string) {
 }
 
 // Ingest validates, hashes and stores a file, creates its document record and queues processing.
-func (s *Service) Ingest(ctx context.Context, req IngestRequest) (*IngestResult, error) {
+func (s *Service) Ingest(ctx context.Context, database *sql.DB, req IngestRequest) (*IngestResult, error) {
 	if req.SourceType == "" {
 		req.SourceType = "MANUAL"
 	}
@@ -81,7 +81,7 @@ func (s *Service) Ingest(ctx context.Context, req IngestRequest) (*IngestResult,
 		name = name[:255]
 	}
 	res := &IngestResult{SHA256: sum, ProcessingStatus: "CLASSIFICATION_PENDING"}
-	err = db.InTx(ctx, s.DB, func(tx *sql.Tx) error {
+	err = db.InTx(ctx, database, func(tx *sql.Tx) error {
 		var dup sql.NullString
 		if err := tx.QueryRowContext(ctx, `SELECT document_id FROM documents WHERE sha256_hash=$1 ORDER BY created_at LIMIT 1`, sum).Scan(&dup); err != nil && err != sql.ErrNoRows {
 			return err
@@ -93,9 +93,6 @@ func (s *Service) Ingest(ctx context.Context, req IngestRequest) (*IngestResult,
 			nullable(req.DeclaredType), name, rel, mime, size, sum, nullable(dup.String), req.SourceType, nullable(req.SourceReference), nullable(req.UserID),
 			nullable(req.EmailMessageID)).
 			Scan(&res.DocumentID); err != nil {
-			return err
-		}
-		if err := s.enqueue(ctx, tx, "PROCESS_DOCUMENT", res.DocumentID, ""); err != nil {
 			return err
 		}
 		desc := fmt.Sprintf("Received %q via %s (%s, %d bytes)", name, req.SourceType, mime, size)
@@ -113,16 +110,18 @@ func (s *Service) Ingest(ctx context.Context, req IngestRequest) (*IngestResult,
 		}
 		return nil, err
 	}
+	wakeUp() // the document is saved as pending; a background worker reads it now
 	return res, nil
 }
 
-// Reprocess queues the full pipeline again (optionally forcing a document type).
-func (s *Service) Reprocess(ctx context.Context, documentID, forceType, userID string) error {
+// Reprocess reads the document again (optionally forcing a document type).
+func (s *Service) Reprocess(ctx context.Context, database *sql.DB, documentID, forceType, userID string) error {
 	forceType = strings.ToUpper(forceType)
 	if forceType != "" && !allowedTypes[forceType] {
 		return userErr(ErrInvalid, "unknown document_type "+forceType)
 	}
-	return db.InTx(ctx, s.DB, func(tx *sql.Tx) error {
+	defer wakeUp()
+	return db.InTx(ctx, database, func(tx *sql.Tx) error {
 		r, err := tx.ExecContext(ctx, `UPDATE documents SET processing_status='CLASSIFICATION_PENDING', processing_error=NULL,
 			declared_document_type=COALESCE($2, declared_document_type), document_type_locked=($2::text IS NOT NULL), updated_at=now()
 			WHERE document_id=$1`, documentID, nullable(forceType))
@@ -133,6 +132,6 @@ func (s *Service) Reprocess(ctx context.Context, documentID, forceType, userID s
 			return ErrNotFound
 		}
 		s.event(ctx, tx, "", documentID, "REPROCESS_REQUESTED", "Reprocessing requested", userID, map[string]any{"forced_type": forceType})
-		return s.enqueue(ctx, tx, "PROCESS_DOCUMENT", documentID, "")
+		return nil
 	})
 }

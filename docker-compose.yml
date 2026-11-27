@@ -3,7 +3,6 @@
 services:
   api:
     build: ./backend
-    command: ["api"]
     env_file: .env
     environment:
       STORAGE_DIR: /data/storage
@@ -11,18 +10,6 @@ services:
       - storage:/data/storage
     ports:
       - "8080:8080"
-    restart: unless-stopped
-
-  worker:
-    build: ./backend
-    command: ["worker"]
-    env_file: .env
-    environment:
-      STORAGE_DIR: /data/storage
-    volumes:
-      - storage:/data/storage
-    depends_on:
-      - api   # api applies migrations on start
     restart: unless-stopped
 
   frontend:

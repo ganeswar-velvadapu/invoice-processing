@@ -20,4 +20,3 @@ WORKDIR /app
 ENV STORAGE_DIR=/data/storage LISTEN_ADDR=:8080
 EXPOSE 8080
 ENTRYPOINT ["server"]
-CMD ["api"]

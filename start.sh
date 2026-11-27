@@ -41,7 +41,6 @@ if [ ! -f .env ]; then
   say "First run: creating .env"
   cp .env.example .env
   setenv DATABASE_URL ""
-  setenv EXTRACTION_ENGINE hybrid
 fi
 chmod 600 .env
 
@@ -101,7 +100,7 @@ fi
 
 # --- start everything (keeps existing data) ---------------------------------------------------
 echo
-say "Starting the app (frontend, API, worker, vision model)"
+say "Starting the app (frontend, backend, vision model)"
 bash scripts/reset_app.sh --keep-data
 
 echo

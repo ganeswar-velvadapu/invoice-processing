@@ -12,7 +12,7 @@ interface Summary {
   open_exceptions_by_severity: Record<string, number>;
   open_exceptions_by_code: Record<string, number>;
   awaiting_approval_amount: number;
-  jobs: Record<string, number>;
+  processing: number;
   recent_events: { event_type: string; event_description: string; created_at: string; invoice_id: string | null; document_id: string | null; actor_email: string | null }[];
 }
 
@@ -32,7 +32,7 @@ export default function Dashboard() {
   if (!data) return <Loading />;
   const s = data.invoices_by_status;
   const openExc = Object.values(data.open_exceptions_by_severity).reduce((a, b) => a + b, 0);
-  const processing = (data.jobs.QUEUED ?? 0) + (data.jobs.RUNNING ?? 0);
+  const processing = data.processing;
   return (
     <>
       <PageHeader title="Dashboard" subtitle={processing ? `${processing} document job(s) processing…` : "All documents processed"} />

@@ -158,12 +158,12 @@ func (s *Service) loadVendor(ctx context.Context, q db.Querier, where string, ar
 }
 
 // Verify runs validation, matching and the decision engine and persists everything.
-func (s *Service) Verify(ctx context.Context, invoiceID, userID string) (*decision.Result, error) {
-	inv, err := s.loadInvoice(ctx, s.DB, invoiceID)
+func (s *Service) Verify(ctx context.Context, database *sql.DB, invoiceID, userID string) (*decision.Result, error) {
+	inv, err := s.loadInvoice(ctx, database, invoiceID)
 	if err != nil {
 		return nil, err
 	}
-	tol, err := s.ActiveTolerance(ctx, s.DB)
+	tol, err := s.ActiveTolerance(ctx, database)
 	if err != nil {
 		return nil, err
 	}
@@ -171,16 +171,16 @@ func (s *Service) Verify(ctx context.Context, invoiceID, userID string) (*decisi
 	// vendor resolution (GSTIN first; a name-only match is an identity red flag, not a match)
 	var vendor, byName *model.Vendor
 	if inv.SellerGSTIN != "" {
-		vendor = s.loadVendor(ctx, s.DB, "gstin=$1", inv.SellerGSTIN)
+		vendor = s.loadVendor(ctx, database, "gstin=$1", inv.SellerGSTIN)
 	}
 	if vendor == nil && inv.SellerName != "" {
-		rows, _ := s.DB.QueryContext(ctx, `SELECT legal_name FROM vendors`)
+		rows, _ := database.QueryContext(ctx, `SELECT legal_name FROM vendors`)
 		if rows != nil {
 			for rows.Next() {
 				var n string
 				rows.Scan(&n)
 				if util.TextSimilarity(n, inv.SellerName) >= 0.6 {
-					byName = s.loadVendor(ctx, s.DB, "legal_name=$1", n)
+					byName = s.loadVendor(ctx, database, "legal_name=$1", n)
 					break
 				}
 			}
@@ -192,23 +192,23 @@ func (s *Service) Verify(ctx context.Context, invoiceID, userID string) (*decisi
 		vendorID = vendor.VendorID
 	}
 	if vendorID != inv.VendorID {
-		s.DB.ExecContext(ctx, `UPDATE invoices SET vendor_id=$2 WHERE invoice_id=$1`, invoiceID, nullable(vendorID))
+		database.ExecContext(ctx, `UPDATE invoices SET vendor_id=$2 WHERE invoice_id=$1`, invoiceID, nullable(vendorID))
 	}
 
 	// duplicates
 	dup := model.DuplicateInfo{IsRevision: inv.isRevision}
 	if inv.docDup != "" {
-		s.DB.QueryRowContext(ctx, `SELECT invoice_id, COALESCE(invoice_number,'') FROM invoices WHERE document_id=$1 AND invoice_id<>$2
+		database.QueryRowContext(ctx, `SELECT invoice_id, COALESCE(invoice_number,'') FROM invoices WHERE document_id=$1 AND invoice_id<>$2
 			AND invoice_status<>'REJECTED'`, inv.docDup, invoiceID).Scan(&dup.SameFileInvoiceID, &dup.SameFileInvoiceNumber)
 	}
 	if inv.SellerGSTIN != "" && inv.InvoiceNumber != "" && inv.InvoiceDate != nil {
-		s.DB.QueryRowContext(ctx, `SELECT invoice_id, invoice_number, invoice_status FROM invoices
+		database.QueryRowContext(ctx, `SELECT invoice_id, invoice_number, invoice_status FROM invoices
 			WHERE seller_gstin=$1 AND invoice_number_normalized=$2 AND financial_year=$3 AND invoice_id<>$4
 			AND invoice_status<>'REJECTED' AND created_at < $5 ORDER BY created_at LIMIT 1`,
 			inv.SellerGSTIN, util.NormalizeDocNumber(inv.InvoiceNumber), util.FinancialYear(*inv.InvoiceDate), invoiceID, inv.createdAt).
 			Scan(&dup.BusinessKeyInvoiceID, &dup.BusinessKeyNumber, &dup.BusinessKeyStatus)
 		if inv.GrandTotal != nil {
-			rows, _ := s.DB.QueryContext(ctx, `SELECT invoice_id FROM invoices WHERE seller_gstin=$1 AND invoice_date=$2 AND grand_total=$3
+			rows, _ := database.QueryContext(ctx, `SELECT invoice_id FROM invoices WHERE seller_gstin=$1 AND invoice_date=$2 AND grand_total=$3
 				AND invoice_id<>$4 AND invoice_status<>'REJECTED' AND invoice_number_normalized IS DISTINCT FROM $5`,
 				inv.SellerGSTIN, *inv.InvoiceDate, *inv.GrandTotal, invoiceID, util.NormalizeDocNumber(inv.InvoiceNumber))
 			if rows != nil {
@@ -233,7 +233,7 @@ func (s *Service) Verify(ctx context.Context, invoiceID, userID string) (*decisi
 		}
 	}
 	mi := match.Input{Invoice: &inv.Invoice, VendorID: vendorID, Tolerance: tol, RejectedPOIDs: map[string]bool{}}
-	mrows, err := s.DB.QueryContext(ctx, `SELECT purchase_order_id, match_status FROM invoice_po_matches WHERE invoice_id=$1 AND match_method='MANUAL'`, invoiceID)
+	mrows, err := database.QueryContext(ctx, `SELECT purchase_order_id, match_status FROM invoice_po_matches WHERE invoice_id=$1 AND match_method='MANUAL'`, invoiceID)
 	if err != nil {
 		return nil, err
 	}
@@ -249,12 +249,12 @@ func (s *Service) Verify(ctx context.Context, invoiceID, userID string) (*decisi
 	}
 	mrows.Close()
 	if len(manualIDs) > 0 {
-		if mi.ManualPOs, err = s.loadPOs(ctx, s.DB, "purchase_order_id = ANY($1::uuid[])", invoiceID, inv.createdAt, manualIDs); err != nil {
+		if mi.ManualPOs, err = s.loadPOs(ctx, database, "purchase_order_id = ANY($1::uuid[])", invoiceID, inv.createdAt, manualIDs); err != nil {
 			return nil, err
 		}
 	}
 	if len(refs) > 0 {
-		if mi.ReferencedPOs, err = s.loadPOs(ctx, s.DB, "po_number_normalized = ANY($1::text[])", invoiceID, inv.createdAt, refs); err != nil {
+		if mi.ReferencedPOs, err = s.loadPOs(ctx, database, "po_number_normalized = ANY($1::text[])", invoiceID, inv.createdAt, refs); err != nil {
 			return nil, err
 		}
 		found := map[string]bool{}
@@ -269,7 +269,7 @@ func (s *Service) Verify(ctx context.Context, invoiceID, userID string) (*decisi
 			}
 			printed := inv.POReferences[min(i, len(inv.POReferences)-1)]
 			// tolerate an OCR slip in the reference, within this vendor only
-			if id, _, approx := findPOByRef(ctx, s.DB, r, vendorID, inv.SellerGSTIN); approx {
+			if id, _, approx := findPOByRef(ctx, database, r, vendorID, inv.SellerGSTIN); approx {
 				approxIDs = append(approxIDs, id)
 				mi.ApproxRefs[id] = printed
 				continue
@@ -277,7 +277,7 @@ func (s *Service) Verify(ctx context.Context, invoiceID, userID string) (*decisi
 			mi.MissingRefs = append(mi.MissingRefs, printed)
 		}
 		if len(approxIDs) > 0 {
-			more, err := s.loadPOs(ctx, s.DB, "purchase_order_id = ANY($1::uuid[])", invoiceID, inv.createdAt, approxIDs)
+			more, err := s.loadPOs(ctx, database, "purchase_order_id = ANY($1::uuid[])", invoiceID, inv.createdAt, approxIDs)
 			if err != nil {
 				return nil, err
 			}
@@ -285,7 +285,7 @@ func (s *Service) Verify(ctx context.Context, invoiceID, userID string) (*decisi
 		}
 	}
 	if len(mi.ManualPOs) == 0 && len(mi.ReferencedPOs) == 0 && (vendorID != "" || inv.SellerGSTIN != "") {
-		if mi.VendorPOs, err = s.loadPOs(ctx, s.DB, "(vendor_id = NULLIF($1,'')::uuid OR vendor_gstin = NULLIF($2,'')) AND po_status='APPROVED'",
+		if mi.VendorPOs, err = s.loadPOs(ctx, database, "(vendor_id = NULLIF($1,'')::uuid OR vendor_gstin = NULLIF($2,'')) AND po_status='APPROVED'",
 			invoiceID, inv.createdAt, vendorID, inv.SellerGSTIN); err != nil {
 			return nil, err
 		}
@@ -294,7 +294,7 @@ func (s *Service) Verify(ctx context.Context, invoiceID, userID string) (*decisi
 	checks = append(checks, mr.Checks...)
 
 	var waived = map[string]bool{}
-	wrows, _ := s.DB.QueryContext(ctx, `SELECT exception_code FROM invoice_exceptions WHERE invoice_id=$1 AND exception_status='WAIVED'`, invoiceID)
+	wrows, _ := database.QueryContext(ctx, `SELECT exception_code FROM invoice_exceptions WHERE invoice_id=$1 AND exception_status='WAIVED'`, invoiceID)
 	if wrows != nil {
 		for wrows.Next() {
 			var c string
@@ -313,7 +313,7 @@ func (s *Service) Verify(ctx context.Context, invoiceID, userID string) (*decisi
 
 	// persist
 	runID := uuid.NewString()
-	err = db.InTx(ctx, s.DB, func(tx *sql.Tx) error {
+	err = db.InTx(ctx, database, func(tx *sql.Tx) error {
 		// serialise concurrent verifications of the same invoice
 		if _, err := tx.ExecContext(ctx, `SELECT 1 FROM invoices WHERE invoice_id=$1 FOR UPDATE`, invoiceID); err != nil {
 			return err

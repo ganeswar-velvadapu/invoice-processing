@@ -55,10 +55,10 @@ def wait_idle(timeout=90):
     t = time.time()
     while time.time() - t < timeout:
         _, s = req("GET", "/dashboard/summary")
-        if not s["jobs"].get("QUEUED") and not s["jobs"].get("RUNNING"):
+        if not s["processing"]:
             return s
         time.sleep(0.5)
-    raise SystemExit("worker did not finish in time")
+    raise SystemExit("background processing did not finish in time")
 
 
 def upload(name, doc_type=""):

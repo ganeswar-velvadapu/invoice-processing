@@ -33,7 +33,7 @@ The roles are kept separate on purpose (segregation of duties), so no single per
 
 ## How documents are read
 
-Every document goes through the same entry point (`internal/service/ingest.go`). The file is identified by its content (PDF, PNG, JPEG or TIFF), fingerprinted with SHA-256 (exact duplicates are caught here), stored, and queued. With `EXTRACTION_ENGINE=hybrid` (recommended), the worker then picks one of two paths.
+Every document goes through the same entry point (`internal/service/ingest.go`). The file is identified by its content (PDF, PNG, JPEG or TIFF), fingerprinted with SHA-256 (exact duplicates are caught here), and stored. A background goroutine then reads it in one of two ways:
 
 ### 1. Digital PDFs: text layer + rules (seconds)
 - `pdftotext -layout` gives the PDF's own text with its layout preserved. No OCR is involved.
@@ -58,7 +58,7 @@ A misread can therefore send an invoice to review, but never get it approved.
 
 ## Email ingestion
 
-The worker checks the AP mailbox over IMAP (`IMAP_POLL_INTERVAL`, e.g. 30s). Every PDF or image attachment of an **unread** email goes through the same entry point as an upload, so the same checks, duplicate detection and audit trail apply. Emails are recorded by Message-ID, so the same email is never imported twice, and they're marked as read once processed. Other file types and signature logos are skipped with a note.
+The backend checks the AP mailbox over IMAP (`IMAP_POLL_INTERVAL`, e.g. 30s). Every PDF or image attachment of an **unread** email goes through the same entry point as an upload, so the same checks, duplicate detection and audit trail apply. Emails are recorded by Message-ID, so the same email is never imported twice, and they're marked as read once processed. Other file types and signature logos are skipped with a note.
 
 A PO or GRN that arrives by email never becomes master data on its own (anyone can send an email); a manager has to confirm it. The **Email inbox** page lists every email with its sender, subject and the documents it created.
 
@@ -67,29 +67,30 @@ For Gmail, turn on 2-Step Verification, create an **App password** (myaccount.go
 ## Technical architecture
 
 ```
-                 ┌──────────── Next.js frontend (:3000) ────────────┐
-                 │  dashboard · queues · comparison · audit · inbox │
-                 └──────────────────────┬───────────────────────────┘
-                                        │ /api/* (proxied)
- upload ─┐                              ▼
-         ├──►  Go API (Gin, :8080) ── JWT roles ──► PostgreSQL (Neon)
- email ──┘     │   ▲                                 documents, extractions, invoices,
- (IMAP)        │   │ ingest: content check,          POs, GRNs, checks, exceptions,
-               │   │ SHA-256, store, queue           audit events, job queue
-               ▼   │
-        Go worker (same binary) ── claims jobs (FOR UPDATE SKIP LOCKED)
-           │  1. text layer + rules + reconciliation gate
-           │  2. else ──► Ollama (Qwen3-VL 4B, local) ── page images
-           │  3. validate → three-way match → decision → exceptions
-           ▼
-        file storage (Docker volume)
+ browser ──► Next.js frontend (:3000) ──/api/*──► Go backend (:8080) ──────────► PostgreSQL (Neon)
+                                                   │                             documents, invoices,
+ email (IMAP) ─────────────────────────────────────┤                             POs, GRNs, checks,
+                                                   │                             exceptions, audit trail
+                                main.go: config → open database → migrations → api.RunApp
+                                                   │
+            Router: login + routes → handlers      │  background goroutines (started in RunApp)
+            uploads, imports, approvals;           │  dispatcher ──channel──► 2 workers
+            handlers call the service functions    │    1. PDF text + rules + reconciliation gate
+                                                   │    2. else ──► Ollama (Qwen3-VL 4B, local)
+                                                   │    3. validate → three-way match → decision
+                                                   │  email poller (IMAP)
+                                                   ▼
+                                        file storage (Docker volume)
 ```
+
+**Request flow:** route → handler → service function → database → JSON response. An upload is saved and answered straight away. Reading it happens in the background.
+
+**Background work:** a dispatcher goroutine sends tasks ("read this document", "re-check this invoice") over a channel to two worker goroutines. The database records what's unfinished: a document waiting to be read keeps a pending status, and an invoice waiting for a re-check is flagged. So if the app stops halfway, that work is picked up again on the next start.
 
 | Part | Technology |
 |---|---|
 | Backend | Go 1.26, Gin, `database/sql` + pgx, golang-migrate (migrations embedded, applied on start) |
-| One binary | `server api` · `server worker` · `server all` · `server migrate` |
-| Job queue | PostgreSQL table with `FOR UPDATE SKIP LOCKED`, retries and stuck-job recovery (no Redis) |
+| Background work | goroutines + a channel inside the backend; unfinished work is recorded in the database (no Redis, no separate worker) |
 | Database | PostgreSQL on **Neon** (only `DATABASE_URL` is needed) |
 | Files | Local storage in a Docker volume (`invoice-processing_storage`) |
 | Reading | Poppler (`pdftotext`, `pdftoppm`); Ollama + Qwen3-VL 4B for scans |
@@ -98,7 +99,7 @@ For Gmail, turn on 2-Step Verification, create an **App password** (myaccount.go
 | Auth | JWT (HS256), bcrypt; roles enforced in the backend |
 
 ```
-backend/     Go API + worker (cmd/server), extraction CLI (cmd/extractcli), migrations
+backend/     Go backend (cmd/server/main.go → internal/api → internal/service), extraction CLI, migrations
 frontend/    Next.js app
 data/demo/   demo master data (CSV), invoices in 5 layouts incl. handwritten, email demo set
 data/EDGE_CASES.md   the edge cases and how each is handled
@@ -122,7 +123,7 @@ On the first run it:
 1. checks that Docker is installed and running;
 2. creates `.env` and asks for the database connection string, an admin email and password, and (optionally) a Gmail address and app password for email ingestion. It generates the `JWT_SECRET` itself;
 3. downloads the Ollama image and the Qwen3-VL model if they aren't there yet;
-4. builds and starts the frontend, API and worker.
+4. builds and starts the frontend and the backend.
 
 When it finishes, open http://localhost:3000, sign in as the admin, and create a clerk and a manager under **Settings**. Running `start.sh` again later just starts everything again: it asks nothing and keeps all data.
 
@@ -131,8 +132,7 @@ When it finishes, open http://localhost:3000, sign in as the admin, and create a
 | Container | Purpose |
 |---|---|
 | `frontend` | Next.js UI on http://localhost:3000 |
-| `api` | Go API on :8080 (logins, uploads, imports, approvals); applies database migrations on start |
-| `worker` | Background processing: reads documents (rules or vision model), runs the checks and matching, re-checks waiting invoices, and polls the email inbox |
+| `api` | The Go backend on :8080: applies migrations, serves the API (logins, uploads, imports, approvals), and in background goroutines reads documents, re-checks invoices and polls the email inbox |
 | `ollama` | Local vision model server (Qwen3-VL 4B) for scans and handwriting |
 
 ### Fresh start: `scripts/reset_app.sh`
@@ -143,7 +143,7 @@ bash scripts/reset_app.sh
 
 This **deletes all uploaded documents and drops every app table** in the database (it asks you to type `reset` first). Then it brings everything up:
 - Ollama and the model are downloaded if missing, or restarted if present.
-- The frontend, API and worker are rebuilt and started.
+- The frontend and backend are rebuilt and started.
 - It reports the status of every container and whether email ingestion is on.
 
 `.env`, `data/` and the downloaded model are always kept.
@@ -160,14 +160,14 @@ This is what `start.sh` runs after setting up `.env`.
 
 `start.sh` fills in the required values. You can also edit `.env` by hand; see `.env.example`.
 - **Required:** `DATABASE_URL` (Neon, `sslmode=require`), `JWT_SECRET`, `ADMIN_EMAIL`, `ADMIN_PASSWORD`.
-- **Recommended:** `EXTRACTION_ENGINE=hybrid` (the default from `start.sh`) and `BUYER_GSTINS` (your company's GSTIN).
+- **Recommended:** `BUYER_GSTINS` (your company's GSTIN) and `GSTIN_CHECKSUM=strict`.
 - **Optional:** the `IMAP_*` settings for email ingestion.
 
 ### Everyday commands
 
 Watch processing and email:
 ```bash
-docker compose logs -f worker
+docker compose logs -f api
 ```
 
 Stop everything (data is kept):
@@ -182,7 +182,7 @@ bash start.sh
 
 Rebuild after code changes:
 ```bash
-docker compose up -d --build api worker frontend
+docker compose up -d --build api frontend
 ```
 
 > Never run `docker compose down -v`: it deletes the uploaded files and the downloaded model.

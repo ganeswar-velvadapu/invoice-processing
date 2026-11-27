@@ -1,4 +1,5 @@
-// Package auth implements password hashing, JWT issuance and role-based Gin middleware.
+// Package auth is login: password hashing, login tokens (JWT) and role checks. Plain functions;
+// the database and the JWT secret are passed in.
 package auth
 
 import (
@@ -22,9 +23,6 @@ const (
 
 var ValidRoles = map[string]bool{RoleClerk: true, RoleManager: true, RoleAdmin: true}
 
-// rank lets "at least manager" style checks work; ADMIN includes manager rights.
-var rank = map[string]int{RoleClerk: 1, RoleManager: 2, RoleAdmin: 3}
-
 type User struct {
 	UserID   string `json:"user_id"`
 	Email    string `json:"email"`
@@ -39,12 +37,6 @@ type Claims struct {
 	jwt.RegisteredClaims
 }
 
-type Service struct {
-	DB     *sql.DB
-	Secret []byte
-	TTL    time.Duration
-}
-
 func HashPassword(pw string) (string, error) {
 	b, err := bcrypt.GenerateFromPassword([]byte(pw), bcrypt.DefaultCost)
 	return string(b), err
@@ -52,10 +44,11 @@ func HashPassword(pw string) (string, error) {
 
 var ErrInvalidCredentials = errors.New("invalid email or password")
 
-func (s *Service) Login(ctx context.Context, email, password string) (string, *User, error) {
+// Login checks email + password and returns a signed token valid for ttl.
+func Login(ctx context.Context, database *sql.DB, secret []byte, ttl time.Duration, email, password string) (string, *User, error) {
 	var u User
 	var hash string
-	err := s.DB.QueryRowContext(ctx,
+	err := database.QueryRowContext(ctx,
 		`SELECT user_id, email, full_name, role, is_active, password_hash FROM users WHERE lower(email)=lower($1)`,
 		strings.TrimSpace(email)).Scan(&u.UserID, &u.Email, &u.FullName, &u.Role, &u.IsActive, &hash)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -67,22 +60,24 @@ func (s *Service) Login(ctx context.Context, email, password string) (string, *U
 	if !u.IsActive || bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) != nil {
 		return "", nil, ErrInvalidCredentials
 	}
-	tok, err := s.Issue(&u)
+	tok, err := issueToken(&u, secret, ttl)
 	return tok, &u, err
 }
 
-func (s *Service) Issue(u *User) (string, error) {
+// issueToken creates the login token: who the user is, their role, and when it expires, signed with secret.
+func issueToken(u *User, secret []byte, ttl time.Duration) (string, error) {
 	now := time.Now()
 	c := Claims{Role: u.Role, Email: u.Email, RegisteredClaims: jwt.RegisteredClaims{
-		Subject: u.UserID, IssuedAt: jwt.NewNumericDate(now), ExpiresAt: jwt.NewNumericDate(now.Add(s.TTL)),
+		Subject: u.UserID, IssuedAt: jwt.NewNumericDate(now), ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
 		Issuer: "invoiceproc",
 	}}
-	return jwt.NewWithClaims(jwt.SigningMethodHS256, c).SignedString(s.Secret)
+	return jwt.NewWithClaims(jwt.SigningMethodHS256, c).SignedString(secret)
 }
 
-func (s *Service) Parse(tok string) (*Claims, error) {
+// parseToken checks a token's signature and expiry and returns what it says.
+func parseToken(tok string, secret []byte) (*Claims, error) {
 	c := &Claims{}
-	_, err := jwt.ParseWithClaims(tok, c, func(t *jwt.Token) (any, error) { return s.Secret, nil },
+	_, err := jwt.ParseWithClaims(tok, c, func(t *jwt.Token) (any, error) { return secret, nil },
 		jwt.WithValidMethods([]string{"HS256"}), jwt.WithIssuer("invoiceproc"))
 	if err != nil {
 		return nil, err
@@ -90,10 +85,10 @@ func (s *Service) Parse(tok string) (*Claims, error) {
 	return c, nil
 }
 
-// EnsureAdmin creates the bootstrap admin if there are no users yet.
-func (s *Service) EnsureAdmin(ctx context.Context, email, password string) (bool, error) {
+// EnsureAdmin creates the first admin (from .env) when there are no users yet.
+func EnsureAdmin(ctx context.Context, database *sql.DB, email, password string) (bool, error) {
 	var n int
-	if err := s.DB.QueryRowContext(ctx, `SELECT count(*) FROM users`).Scan(&n); err != nil {
+	if err := database.QueryRowContext(ctx, `SELECT count(*) FROM users`).Scan(&n); err != nil {
 		return false, err
 	}
 	if n > 0 {
@@ -106,14 +101,14 @@ func (s *Service) EnsureAdmin(ctx context.Context, email, password string) (bool
 	if err != nil {
 		return false, err
 	}
-	_, err = s.DB.ExecContext(ctx, `INSERT INTO users (email, full_name, password_hash, role) VALUES ($1,'Administrator',$2,'ADMIN')`, email, h)
+	_, err = database.ExecContext(ctx, `INSERT INTO users (email, full_name, password_hash, role) VALUES ($1,'Administrator',$2,'ADMIN')`, email, h)
 	return err == nil, err
 }
 
 const ctxKey = "auth.claims"
 
-// Middleware authenticates a Bearer token and checks the user is still active.
-func (s *Service) Middleware() gin.HandlerFunc {
+// RequireLogin runs before protected routes: it checks the Bearer token and that the user is still active.
+func RequireLogin(database *sql.DB, secret []byte) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		h := c.GetHeader("Authorization")
 		tok := strings.TrimPrefix(h, "Bearer ")
@@ -121,14 +116,14 @@ func (s *Service) Middleware() gin.HandlerFunc {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
 			return
 		}
-		claims, err := s.Parse(tok)
+		claims, err := parseToken(tok, secret)
 		if err != nil {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired token"})
 			return
 		}
 		var active bool
 		var role string
-		if err := s.DB.QueryRowContext(c, `SELECT is_active, role FROM users WHERE user_id=$1`, claims.Subject).Scan(&active, &role); err != nil || !active {
+		if err := database.QueryRowContext(c, `SELECT is_active, role FROM users WHERE user_id=$1`, claims.Subject).Scan(&active, &role); err != nil || !active {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "user inactive"})
 			return
 		}
@@ -138,18 +133,28 @@ func (s *Service) Middleware() gin.HandlerFunc {
 	}
 }
 
-// Require allows the request only if the user's role is at least `min`.
-func Require(min string) gin.HandlerFunc {
+// RequireRole lets the request through only if the user's role is one of roles.
+// Use it on a route after RequireLogin, e.g. p.POST("/users", auth.RequireRole(auth.RoleAdmin), h.CreateUser).
+func RequireRole(roles ...string) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if rank[CurrentRole(c)] < rank[min] {
-			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "insufficient permissions: requires " + min})
+		if !HasRole(c, roles...) {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "your role is not allowed to do this"})
 			return
 		}
 		c.Next()
 	}
 }
 
-func HasRole(c *gin.Context, min string) bool { return rank[CurrentRole(c)] >= rank[min] }
+// HasRole reports whether the logged-in user's role is one of roles (for checks inside a handler).
+func HasRole(c *gin.Context, roles ...string) bool {
+	role := CurrentRole(c)
+	for _, r := range roles {
+		if role == r {
+			return true
+		}
+	}
+	return false
+}
 
 func CurrentClaims(c *gin.Context) *Claims {
 	v, ok := c.Get(ctxKey)

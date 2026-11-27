@@ -521,10 +521,11 @@ func (s *Service) linkGRN(ctx context.Context, q db.Querier, grnID, poID string)
 	return nil
 }
 
-// relink connects GRNs to POs that arrived later and queues re-verification of open invoices,
+// relink connects GRNs to POs that arrived later and flags open invoices for a re-check,
 // so documents can arrive in any order.
-func (s *Service) relink(ctx context.Context) error {
-	return db.InTx(ctx, s.DB, func(tx *sql.Tx) error {
+func (s *Service) relink(ctx context.Context, database *sql.DB) error {
+	defer wakeUp()
+	return db.InTx(ctx, database, func(tx *sql.Tx) error {
 		rows, err := tx.QueryContext(ctx, `SELECT g.goods_receipt_note_id, p.purchase_order_id FROM goods_receipt_notes g
 			JOIN purchase_orders p ON p.po_number_normalized = regexp_replace(upper(g.po_reference), '[^A-Z0-9]', '', 'g')
 			WHERE g.purchase_order_id IS NULL AND g.po_reference IS NOT NULL`)
@@ -568,10 +569,8 @@ func (s *Service) relink(ctx context.Context) error {
 			}
 		}
 		// Re-evaluate every invoice still waiting on documents or review.
-		_, err = tx.ExecContext(ctx, `INSERT INTO processing_jobs (job_type, invoice_id)
-			SELECT 'VERIFY_INVOICE', i.invoice_id FROM invoices i
-			WHERE i.invoice_status IN ('PENDING_DOCUMENTS','PENDING_PO_MATCH','PENDING_GRN','REVIEW_REQUIRED','ON_HOLD','READY_FOR_VERIFICATION')
-			AND NOT EXISTS (SELECT 1 FROM processing_jobs j WHERE j.job_type='VERIFY_INVOICE' AND j.invoice_id=i.invoice_id AND j.job_status='QUEUED')`)
+		_, err = tx.ExecContext(ctx, `UPDATE invoices SET verify_requested_at=now()
+			WHERE invoice_status IN ('PENDING_DOCUMENTS','PENDING_PO_MATCH','PENDING_GRN','REVIEW_REQUIRED','ON_HOLD','READY_FOR_VERIFICATION')`)
 		return err
 	})
 }

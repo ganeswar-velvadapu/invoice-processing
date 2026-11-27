@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"mime"
 	"net"
 	"strconv"
@@ -27,17 +28,17 @@ import (
 const maxEmailsPerPoll = 25
 
 // RunEmailPoller polls the mailbox until ctx ends. It returns at once when IMAP is not configured.
-func (s *Service) RunEmailPoller(ctx context.Context) {
+func (s *Service) RunEmailPoller(ctx context.Context, database *sql.DB) {
 	if !s.Cfg.IMAPEnabled() {
 		return
 	}
-	s.Log.Info("email ingestion started", "mailbox", s.Cfg.IMAPUser, "host", s.Cfg.IMAPHost, "folder", s.Cfg.IMAPFolder, "every", s.Cfg.IMAPPoll)
+	slog.Info("email ingestion started", "mailbox", s.Cfg.IMAPUser, "host", s.Cfg.IMAPHost, "folder", s.Cfg.IMAPFolder, "every", s.Cfg.IMAPPoll)
 	for {
-		n, err := s.PollMailbox(ctx)
+		n, err := s.PollMailbox(ctx, database)
 		if err != nil {
-			s.Log.Error("email poll failed", "err", err)
+			slog.Error("email poll failed", "err", err)
 		} else if n > 0 {
-			s.Log.Info("email poll", "messages", n)
+			slog.Info("email poll", "messages", n)
 		}
 		select {
 		case <-ctx.Done():
@@ -48,7 +49,7 @@ func (s *Service) RunEmailPoller(ctx context.Context) {
 }
 
 // PollMailbox handles the unread messages once and returns how many were processed.
-func (s *Service) PollMailbox(ctx context.Context) (int, error) {
+func (s *Service) PollMailbox(ctx context.Context, database *sql.DB) (int, error) {
 	addr := net.JoinHostPort(s.Cfg.IMAPHost, strconv.Itoa(s.Cfg.IMAPPort))
 	dialer := &net.Dialer{Timeout: 30 * time.Second}
 	var c *client.Client
@@ -98,8 +99,8 @@ func (s *Service) PollMailbox(ctx context.Context) (int, error) {
 		if body == nil {
 			continue
 		}
-		if err := s.ingestEmail(ctx, m.Envelope, body, m.Uid); err != nil {
-			s.Log.Error("email not ingested; will retry next poll", "uid", m.Uid, "err", err)
+		if err := s.ingestEmail(ctx, database, m.Envelope, body, m.Uid); err != nil {
+			slog.Error("email not ingested; will retry next poll", "uid", m.Uid, "err", err)
 			continue
 		}
 		done.AddNum(m.Uid)
@@ -120,7 +121,7 @@ type emailAttachment struct {
 
 // ingestEmail records one message and ingests its attachments. An error means nothing was recorded and the
 // message stays unread for the next poll.
-func (s *Service) ingestEmail(ctx context.Context, env *imap.Envelope, body io.Reader, uid uint32) error {
+func (s *Service) ingestEmail(ctx context.Context, database *sql.DB, env *imap.Envelope, body io.Reader, uid uint32) error {
 	mr, err := mail.CreateReader(body)
 	if err != nil {
 		return fmt.Errorf("parse message: %w", err)
@@ -141,7 +142,7 @@ func (s *Service) ingestEmail(ctx context.Context, env *imap.Envelope, body io.R
 		msgID = fmt.Sprintf("uid-%d@%s/%s", uid, s.Cfg.IMAPUser, s.Cfg.IMAPFolder)
 	}
 	var exists bool
-	if err := s.DB.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM email_messages WHERE message_id=$1)`, msgID).Scan(&exists); err != nil {
+	if err := database.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM email_messages WHERE message_id=$1)`, msgID).Scan(&exists); err != nil {
 		return err
 	}
 	if exists {
@@ -180,14 +181,14 @@ func (s *Service) ingestEmail(ctx context.Context, env *imap.Envelope, body io.R
 	}
 
 	var emailID string
-	if err := s.DB.QueryRowContext(ctx, `INSERT INTO email_messages (message_id, mailbox, from_address, from_name, subject, sent_at,
+	if err := database.QueryRowContext(ctx, `INSERT INTO email_messages (message_id, mailbox, from_address, from_name, subject, sent_at,
 		attachments_found, status) VALUES ($1,$2,$3,$4,$5,$6,$7,'INGESTED') RETURNING email_message_id`,
 		msgID, s.Cfg.IMAPUser, nullable(fromAddr), nullable(fromName), nullable(subject), sent, len(atts)+len(skipped)).Scan(&emailID); err != nil {
 		return err
 	}
 	created := 0
 	for i, a := range atts {
-		res, err := s.Ingest(ctx, IngestRequest{Reader: bytes.NewReader(a.data), OriginalFilename: a.name, SourceType: "EMAIL",
+		res, err := s.Ingest(ctx, database, IngestRequest{Reader: bytes.NewReader(a.data), OriginalFilename: a.name, SourceType: "EMAIL",
 			SourceReference: fmt.Sprintf("%s#%d", msgID, i+1), EmailMessageID: emailID})
 		var ue *UserError
 		if errors.As(err, &ue) {
@@ -196,11 +197,11 @@ func (s *Service) ingestEmail(ctx context.Context, env *imap.Envelope, body io.R
 		}
 		if err != nil {
 			skipped = append(skipped, a.name+": could not be stored")
-			s.Log.Error("email attachment not stored", "file", a.name, "err", err)
+			slog.Error("email attachment not stored", "file", a.name, "err", err)
 			continue
 		}
 		created++
-		s.event(ctx, s.DB, "", res.DocumentID, "EMAIL_RECEIVED", fmt.Sprintf("Received by email from %s, subject %q", emailFrom(fromName, fromAddr), subject), "",
+		s.event(ctx, database, "", res.DocumentID, "EMAIL_RECEIVED", fmt.Sprintf("Received by email from %s, subject %q", emailFrom(fromName, fromAddr), subject), "",
 			map[string]any{"message_id": msgID, "from": fromAddr, "subject": subject})
 	}
 	status := "INGESTED"
@@ -212,9 +213,9 @@ func (s *Service) ingestEmail(ctx context.Context, env *imap.Envelope, body io.R
 	case len(skipped) > 0:
 		status = "PARTIAL"
 	}
-	_, err = s.DB.ExecContext(ctx, `UPDATE email_messages SET documents_created=$2, status=$3, note=$4 WHERE email_message_id=$1`,
+	_, err = database.ExecContext(ctx, `UPDATE email_messages SET documents_created=$2, status=$3, note=$4 WHERE email_message_id=$1`,
 		emailID, created, status, nullable(strings.Join(skipped, "; ")))
-	s.Log.Info("email ingested", "from", fromAddr, "subject", subject, "documents", created, "status", status)
+	slog.Info("email ingested", "from", fromAddr, "subject", subject, "documents", created, "status", status)
 	return err
 }
 
@@ -253,13 +254,13 @@ type EmailStatus struct {
 	LastAt   *time.Time `json:"last_received_at,omitempty"`
 }
 
-func (s *Service) EmailStatus(ctx context.Context) (EmailStatus, error) {
+func (s *Service) EmailStatus(ctx context.Context, database *sql.DB) (EmailStatus, error) {
 	st := EmailStatus{Enabled: s.Cfg.IMAPEnabled()}
 	if st.Enabled {
 		st.Mailbox = s.Cfg.IMAPUser
 	}
 	var last sql.NullTime
-	err := s.DB.QueryRowContext(ctx, `SELECT count(*), max(received_at) FROM email_messages`).Scan(&st.Received, &last)
+	err := database.QueryRowContext(ctx, `SELECT count(*), max(received_at) FROM email_messages`).Scan(&st.Received, &last)
 	if last.Valid {
 		st.LastAt = &last.Time
 	}

@@ -25,20 +25,20 @@ func (s *Service) invoiceState(ctx context.Context, q db.Querier, id string) (st
 	return status, d.String, docID, err
 }
 
-// requeueSiblings re-verifies other open invoices sharing a PO, since approving/rejecting changes
-// how much quantity remains available to them.
+// requeueSiblings flags other open invoices sharing a PO for a re-check, since approving/rejecting
+// changes how much quantity remains available to them. Callers wake the dispatcher after commit.
 func (s *Service) requeueSiblings(ctx context.Context, q db.Querier, invoiceID string) {
-	q.ExecContext(ctx, `INSERT INTO processing_jobs (job_type, invoice_id)
-		SELECT DISTINCT 'VERIFY_INVOICE', m2.invoice_id FROM invoice_po_matches m1
+	q.ExecContext(ctx, `UPDATE invoices SET verify_requested_at=now() WHERE invoice_id IN (
+		SELECT m2.invoice_id FROM invoice_po_matches m1
 		JOIN invoice_po_matches m2 ON m2.purchase_order_id=m1.purchase_order_id AND m2.invoice_id<>m1.invoice_id
 		JOIN invoices i ON i.invoice_id=m2.invoice_id
-		WHERE m1.invoice_id=$1 AND i.invoice_status NOT IN ('APPROVED','REJECTED','PAYMENT_PENDING','PAID')
-		AND NOT EXISTS (SELECT 1 FROM processing_jobs j WHERE j.job_type='VERIFY_INVOICE' AND j.invoice_id=m2.invoice_id AND j.job_status='QUEUED')`, invoiceID)
+		WHERE m1.invoice_id=$1 AND i.invoice_status NOT IN ('APPROVED','REJECTED','PAYMENT_PENDING','PAID'))`, invoiceID)
 }
 
 // Approve accepts an invoice whose system decision is APPROVE. Anything else needs an override.
-func (s *Service) Approve(ctx context.Context, invoiceID, userID, note string) error {
-	return db.InTx(ctx, s.DB, func(tx *sql.Tx) error {
+func (s *Service) Approve(ctx context.Context, database *sql.DB, invoiceID, userID, note string) error {
+	defer wakeUp() // after commit: re-check other invoices on the same PO
+	return db.InTx(ctx, database, func(tx *sql.Tx) error {
 		status, dec, docID, err := s.invoiceState(ctx, tx, invoiceID)
 		if err != nil {
 			return err
@@ -83,11 +83,12 @@ func (s *Service) Approve(ctx context.Context, invoiceID, userID, note string) e
 	})
 }
 
-func (s *Service) Reject(ctx context.Context, invoiceID, userID, reason string) error {
+func (s *Service) Reject(ctx context.Context, database *sql.DB, invoiceID, userID, reason string) error {
+	defer wakeUp()
 	if err := requireReason(reason); err != nil {
 		return err
 	}
-	return db.InTx(ctx, s.DB, func(tx *sql.Tx) error {
+	return db.InTx(ctx, database, func(tx *sql.Tx) error {
 		status, dec, docID, err := s.invoiceState(ctx, tx, invoiceID)
 		if err != nil {
 			return err
@@ -107,7 +108,8 @@ func (s *Service) Reject(ctx context.Context, invoiceID, userID, reason string) 
 var overrideTargets = map[string]bool{"APPROVED": true, "REJECTED": true, "ON_HOLD": true, "REVIEW_REQUIRED": true}
 
 // Override sets a status against the system decision; reason is mandatory and fully audited.
-func (s *Service) Override(ctx context.Context, invoiceID, userID, target, reason string) error {
+func (s *Service) Override(ctx context.Context, database *sql.DB, invoiceID, userID, target, reason string) error {
+	defer wakeUp()
 	target = strings.ToUpper(target)
 	if !overrideTargets[target] {
 		return userErr(ErrInvalid, "target_status must be one of APPROVED, REJECTED, ON_HOLD, REVIEW_REQUIRED")
@@ -115,7 +117,7 @@ func (s *Service) Override(ctx context.Context, invoiceID, userID, target, reaso
 	if err := requireReason(reason); err != nil {
 		return err
 	}
-	return db.InTx(ctx, s.DB, func(tx *sql.Tx) error {
+	return db.InTx(ctx, database, func(tx *sql.Tx) error {
 		status, dec, docID, err := s.invoiceState(ctx, tx, invoiceID)
 		if err != nil {
 			return err
@@ -144,9 +146,9 @@ func (s *Service) Override(ctx context.Context, invoiceID, userID, target, reaso
 }
 
 // UpdateException resolves, waives, reopens or assigns an exception, then re-runs the decision.
-func (s *Service) UpdateException(ctx context.Context, excID, userID, action, note, assignee string) (string, error) {
+func (s *Service) UpdateException(ctx context.Context, database *sql.DB, excID, userID, action, note, assignee string) (string, error) {
 	var invoiceID, code, status string
-	if err := s.DB.QueryRowContext(ctx, `SELECT invoice_id, exception_code, exception_status FROM invoice_exceptions WHERE invoice_exception_id=$1`, excID).
+	if err := database.QueryRowContext(ctx, `SELECT invoice_id, exception_code, exception_status FROM invoice_exceptions WHERE invoice_exception_id=$1`, excID).
 		Scan(&invoiceID, &code, &status); err != nil {
 		if err == sql.ErrNoRows {
 			return "", ErrNotFound
@@ -184,21 +186,21 @@ func (s *Service) UpdateException(ctx context.Context, excID, userID, action, no
 	default:
 		return "", userErr(ErrInvalid, "action must be CHECK, RESOLVE, WAIVE, REOPEN or ASSIGN")
 	}
-	if _, err := s.DB.ExecContext(ctx, q, args...); err != nil {
+	if _, err := database.ExecContext(ctx, q, args...); err != nil {
 		return "", err
 	}
-	s.event(ctx, s.DB, invoiceID, "", "EXCEPTION_"+strings.ToUpper(action), fmt.Sprintf("%s %s: %s", strings.ToLower(action), code, note), userID,
+	s.event(ctx, database, invoiceID, "", "EXCEPTION_"+strings.ToUpper(action), fmt.Sprintf("%s %s: %s", strings.ToLower(action), code, note), userID,
 		map[string]any{"exception_id": excID, "previous_status": status, "assignee": assignee})
 	// A resolved exception whose underlying check still fails will be reopened by verification;
 	// a waived one is excluded from the decision.
-	_, err := s.Verify(ctx, invoiceID, userID)
+	_, err := s.Verify(ctx, database, invoiceID, userID)
 	return invoiceID, err
 }
 
 // SetPOMatch lets AP confirm or reject a PO for an invoice (MANUAL match), or clear manual choices.
-func (s *Service) SetPOMatch(ctx context.Context, invoiceID, poID, userID, action, note string) error {
+func (s *Service) SetPOMatch(ctx context.Context, database *sql.DB, invoiceID, poID, userID, action, note string) error {
 	action = strings.ToUpper(action)
-	err := db.InTx(ctx, s.DB, func(tx *sql.Tx) error {
+	err := db.InTx(ctx, database, func(tx *sql.Tx) error {
 		var poNum string
 		if action != "CLEAR" {
 			if err := tx.QueryRowContext(ctx, `SELECT po_number FROM purchase_orders WHERE purchase_order_id=$1`, poID).Scan(&poNum); err != nil {
@@ -229,7 +231,7 @@ func (s *Service) SetPOMatch(ctx context.Context, invoiceID, poID, userID, actio
 	if err != nil {
 		return err
 	}
-	_, err = s.Verify(ctx, invoiceID, userID)
+	_, err = s.Verify(ctx, database, invoiceID, userID)
 	return err
 }
 
@@ -242,11 +244,11 @@ func suffix(note string) string {
 
 // ReturnToClerk sends an invoice back to AP clerks with the manager's note. It stays RETURNED (automatic
 // re-checks do not change that) until a clerk resubmits it.
-func (s *Service) ReturnToClerk(ctx context.Context, invoiceID, userID, note, assignee string) error {
+func (s *Service) ReturnToClerk(ctx context.Context, database *sql.DB, invoiceID, userID, note, assignee string) error {
 	if err := requireReason(note); err != nil {
 		return err
 	}
-	return db.InTx(ctx, s.DB, func(tx *sql.Tx) error {
+	return db.InTx(ctx, database, func(tx *sql.Tx) error {
 		status, dec, docID, err := s.invoiceState(ctx, tx, invoiceID)
 		if err != nil {
 			return err
@@ -273,11 +275,11 @@ func (s *Service) ReturnToClerk(ctx context.Context, invoiceID, userID, note, as
 
 // Resubmit: a clerk sends a returned invoice back for approval. It is re-verified, so the manager sees a
 // fresh system decision based on whatever the clerk corrected.
-func (s *Service) Resubmit(ctx context.Context, invoiceID, userID, note string) error {
+func (s *Service) Resubmit(ctx context.Context, database *sql.DB, invoiceID, userID, note string) error {
 	if err := requireReason(note); err != nil {
 		return err
 	}
-	err := db.InTx(ctx, s.DB, func(tx *sql.Tx) error {
+	err := db.InTx(ctx, database, func(tx *sql.Tx) error {
 		status, _, docID, err := s.invoiceState(ctx, tx, invoiceID)
 		if err != nil {
 			return err
@@ -294,13 +296,13 @@ func (s *Service) Resubmit(ctx context.Context, invoiceID, userID, note string) 
 	if err != nil {
 		return err
 	}
-	_, err = s.Verify(ctx, invoiceID, userID)
+	_, err = s.Verify(ctx, database, invoiceID, userID)
 	return err
 }
 
 // SubmitForApproval: a clerk has reviewed the invoice against its PO/GRN and sends it to a manager with a
 // recommendation. Recommending approval requires every exception to be checked, resolved or waived first.
-func (s *Service) SubmitForApproval(ctx context.Context, invoiceID, userID, recommendation, note string) error {
+func (s *Service) SubmitForApproval(ctx context.Context, database *sql.DB, invoiceID, userID, recommendation, note string) error {
 	recommendation = strings.ToUpper(recommendation)
 	if recommendation != "APPROVE" && recommendation != "REJECT" {
 		return userErr(ErrInvalid, "recommendation must be APPROVE or REJECT")
@@ -308,7 +310,7 @@ func (s *Service) SubmitForApproval(ctx context.Context, invoiceID, userID, reco
 	if err := requireReason(note); err != nil {
 		return err
 	}
-	return db.InTx(ctx, s.DB, func(tx *sql.Tx) error {
+	return db.InTx(ctx, database, func(tx *sql.Tx) error {
 		status, dec, docID, err := s.invoiceState(ctx, tx, invoiceID)
 		if err != nil {
 			return err

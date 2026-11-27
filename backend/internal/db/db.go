@@ -77,23 +77,3 @@ func InTx(ctx context.Context, d *sql.DB, fn func(tx *sql.Tx) error) error {
 	}
 	return tx.Commit()
 }
-
-// WaitForSchema blocks until the API has applied migrations (processing_jobs exists), so a worker
-// started at the same time does not poll a missing table.
-func WaitForSchema(ctx context.Context, d *sql.DB, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	for {
-		var reg sql.NullString
-		if err := d.QueryRowContext(ctx, `SELECT to_regclass('public.processing_jobs')::text`).Scan(&reg); err == nil && reg.Valid {
-			return nil
-		}
-		if time.Now().After(deadline) {
-			return errors.New("database schema not ready: start the api (it applies migrations) or run `server migrate`")
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(2 * time.Second):
-		}
-	}
-}

@@ -25,12 +25,12 @@ type ImportResult struct {
 }
 
 // Import loads master/procurement data atomically (all or nothing) and re-evaluates open invoices.
-func (s *Service) Import(ctx context.Context, in ProcurementImport, source, userID string) (*ImportResult, error) {
+func (s *Service) Import(ctx context.Context, database *sql.DB, in ProcurementImport, source, userID string) (*ImportResult, error) {
 	if source == "" {
 		source = "IMPORT"
 	}
 	res := &ImportResult{Errors: []string{}, Warnings: []string{}}
-	err := db.InTx(ctx, s.DB, func(tx *sql.Tx) error {
+	err := db.InTx(ctx, database, func(tx *sql.Tx) error {
 		for i, v := range in.Vendors {
 			if _, err := s.UpsertVendor(ctx, tx, v); err != nil {
 				return fmt.Errorf("vendor #%d (%s): %w", i+1, v.LegalName, err)
@@ -61,5 +61,5 @@ func (s *Service) Import(ctx context.Context, in ProcurementImport, source, user
 	if err != nil {
 		return nil, userErr(ErrInvalid, "import failed, nothing was saved: "+err.Error())
 	}
-	return res, s.relink(ctx)
+	return res, s.relink(ctx, database)
 }

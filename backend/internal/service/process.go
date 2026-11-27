@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"invoiceproc/internal/classify"
@@ -20,21 +21,16 @@ type docRow struct {
 	locked              bool
 }
 
-func (s *Service) setStage(ctx context.Context, docID, status, stage string) {
-	s.DB.ExecContext(ctx, `UPDATE documents SET processing_status=$2, processing_stage=$3, updated_at=now() WHERE document_id=$1`, docID, status, stage)
+func (s *Service) setStage(ctx context.Context, database *sql.DB, docID, status, stage string) {
+	database.ExecContext(ctx, `UPDATE documents SET processing_status=$2, processing_stage=$3, updated_at=now() WHERE document_id=$1`, docID, status, stage)
 }
 
-// ProcessDocument runs the full pipeline for one stored document.
-//
-// EXTRACTION_ENGINE decides how the document is read (everything after reading is identical):
-//
-//	rules   embedded PDF text, rule-based parsing (no AI); scans cannot be read
-//	vlm     every document is transcribed by the local vision model; no OCR
-//	hybrid  PDFs with a full text layer are parsed by rules first; scans, and documents whose
-//	        critical fields the rules are unsure about, go to the vision model; no OCR
-func (s *Service) ProcessDocument(ctx context.Context, docID string) error {
+// ProcessDocument reads one stored document and saves what it found (invoice, PO or GRN):
+//  1. a digital PDF is read from its own text by rules, and kept only if its numbers reconcile;
+//  2. otherwise (scans, handwriting, or rules unsure) the local vision model reads it.
+func (s *Service) ProcessDocument(ctx context.Context, database *sql.DB, docID string) error {
 	var d docRow
-	err := s.DB.QueryRowContext(ctx, `SELECT document_id, storage_path, mime_type, sha256_hash, declared_document_type, duplicate_of_document_id,
+	err := database.QueryRowContext(ctx, `SELECT document_id, storage_path, mime_type, sha256_hash, declared_document_type, duplicate_of_document_id,
 		document_type_locked FROM documents WHERE document_id=$1`, docID).Scan(&d.id, &d.path, &d.mime, &d.sha, &d.declared, &d.dupOf, &d.locked)
 	if err != nil {
 		return fmt.Errorf("load document: %w", err)
@@ -43,41 +39,7 @@ func (s *Service) ProcessDocument(ctx context.Context, docID string) error {
 	if err != nil {
 		return err
 	}
-	if s.VLM != nil && s.Cfg.ExtractionEngine != "rules" {
-		return s.processWithVision(ctx, d, full)
-	}
-
-	// 1. text extraction (the PDF's own text layer; scans need the vision model)
-	s.setStage(ctx, docID, "EXTRACTION_PENDING", "extracting text")
-	res, err := s.Extractor.Extract(ctx, full, d.mime)
-	if err != nil {
-		return fmt.Errorf("text extraction: %w", err)
-	}
-	texts := lineTexts(res.Lines)
-	if len(strings.TrimSpace(strings.Join(texts, ""))) == 0 {
-		if len(res.ScannedPages) > 0 {
-			return fmt.Errorf("scanned document without a text layer: it can only be read by the vision model (set EXTRACTION_ENGINE=hybrid)")
-		}
-		return fmt.Errorf("no text could be extracted (blank or unreadable document)")
-	}
-
-	// 2. classification (the user's declared type is a hint the classifier verifies)
-	s.setStage(ctx, docID, "CLASSIFICATION_PENDING", "classifying")
-	cls := classify.Classify(texts)
-	docType, typeConf, err := s.applyType(ctx, d, cls.DocumentType, cls.Confidence, res.PageCount, res.Method,
-		map[string]any{"classification": cls, "scanned_pages": res.ScannedPages})
-	if err != nil {
-		return err
-	}
-
-	// 3. structured extraction (with a vendor profile when one exists)
-	s.setStage(ctx, docID, "EXTRACTION_PENDING", "extracting fields")
-	data := s.parseWithProfile(ctx, res.Lines, docType)
-	data.ClassificationConfidence = typeConf
-	data.ExtractedBy = "rules"
-
-	full100 := 100.0
-	return s.saveAndMaterialize(ctx, docID, docType, res.Method, res.Text(), data, &full100, "")
+	return s.readDocument(ctx, database, d, full)
 }
 
 func lineTexts(ls []extract.Line) []string {
@@ -89,7 +51,7 @@ func lineTexts(ls []extract.Line) []string {
 }
 
 // applyType reconciles the detected type with the uploader's declared type, stores it and logs it.
-func (s *Service) applyType(ctx context.Context, d docRow, detected string, conf float64, pages int, via string, evidence map[string]any) (string, float64, error) {
+func (s *Service) applyType(ctx context.Context, database *sql.DB, d docRow, detected string, conf float64, pages int, via string, evidence map[string]any) (string, float64, error) {
 	docType, typeConf := detected, conf
 	var note string
 	if declared := d.declared.String; d.declared.Valid && declared != "" {
@@ -106,7 +68,7 @@ func (s *Service) applyType(ctx context.Context, d docRow, detected string, conf
 			note = fmt.Sprintf("Using declared type %s (content suggested %s at %.0f%%)", declared, detected, conf*100)
 		}
 	}
-	if _, err := s.DB.ExecContext(ctx, `UPDATE documents SET document_type=$2, classification_confidence=$3, page_count=$4, updated_at=now() WHERE document_id=$1`,
+	if _, err := database.ExecContext(ctx, `UPDATE documents SET document_type=$2, classification_confidence=$3, page_count=$4, updated_at=now() WHERE document_id=$1`,
 		d.id, docType, typeConf, pages); err != nil {
 		return "", 0, err
 	}
@@ -117,14 +79,14 @@ func (s *Service) applyType(ctx context.Context, d docRow, detected string, conf
 	if note != "" {
 		desc += ". " + note
 	}
-	s.event(ctx, s.DB, "", d.id, "CLASSIFIED", desc, "", evidence)
+	s.event(ctx, database, "", d.id, "CLASSIFIED", desc, "", evidence)
 	return docType, typeConf, nil
 }
 
-// processWithVision reads documents with the local vision model (no OCR). The PDF's own text layer,
-// when present, is used for the rules fast path (hybrid) and to verify the model's values.
-func (s *Service) processWithVision(ctx context.Context, d docRow, full string) error {
-	s.setStage(ctx, d.id, "EXTRACTION_PENDING", "reading text layer")
+// readDocument tries the PDF's own text with rules first, then the vision model. The text layer is
+// also used to verify the model's values.
+func (s *Service) readDocument(ctx context.Context, database *sql.DB, d docRow, full string) error {
+	s.setStage(ctx, database, d.id, "EXTRACTION_PENDING", "reading text layer")
 	tl, err := s.Extractor.Extract(ctx, full, d.mime)
 	if err != nil {
 		return fmt.Errorf("text layer: %w", err)
@@ -132,32 +94,35 @@ func (s *Service) processWithVision(ctx context.Context, d docRow, full string) 
 	texts := lineTexts(tl.Lines)
 	fullTextLayer := tl.FullTextLayer()
 
-	// hybrid fast path: digital PDFs whose critical fields the rules read confidently
-	if s.Cfg.ExtractionEngine == "hybrid" && fullTextLayer {
+	// fast path: digital PDFs whose critical fields the rules read confidently
+	var rulesData *parse.Data // kept in case the vision model is unavailable
+	var rulesType string
+	var rulesConf float64
+	if fullTextLayer {
 		cls := classify.Classify(texts)
 		if cls.DocumentType != "OTHER" {
-			tol, err := s.ActiveTolerance(ctx, s.DB)
+			tol, err := s.ActiveTolerance(ctx, database)
 			if err != nil {
 				return err
 			}
-			data := s.parseWithProfile(ctx, tl.Lines, cls.DocumentType)
+			data := s.parseWithProfile(ctx, database, tl.Lines, cls.DocumentType)
 			data.ClassificationConfidence = cls.Confidence
-			s.boostWithMasterData(ctx, data)
+			s.boostWithMasterData(ctx, database, data)
 			low := parse.LowConfidence(data, tol.MinExtractionConfidence)
 			problems := parse.ReconcileProblems(data, tl.Lines)
 			if len(low) == 0 && len(problems) == 0 {
-				docType, typeConf, err := s.applyType(ctx, d, cls.DocumentType, cls.Confidence, tl.PageCount, "text layer + rules",
+				docType, typeConf, err := s.applyType(ctx, database, d, cls.DocumentType, cls.Confidence, tl.PageCount, "text layer + rules",
 					map[string]any{"classification": cls, "engine": "rules"})
 				if err != nil {
 					return err
 				}
 				if docType != cls.DocumentType {
-					data = s.parseWithProfile(ctx, tl.Lines, docType)
+					data = s.parseWithProfile(ctx, database, tl.Lines, docType)
 				}
 				data.ClassificationConfidence = typeConf
 				data.ExtractedBy = "rules"
 				full := 100.0
-				return s.saveAndMaterialize(ctx, d.id, docType, extract.MethodPDFText, tl.Text(), data, &full, "")
+				return s.saveAndMaterialize(ctx, database, d.id, docType, extract.MethodPDFText, tl.Text(), data, &full, "")
 			} else {
 				reasons := append(append([]string{}, problems...), func() []string {
 					if len(low) > 0 {
@@ -165,21 +130,38 @@ func (s *Service) processWithVision(ctx context.Context, d docRow, full string) 
 					}
 					return nil
 				}()...)
-				s.event(ctx, s.DB, "", d.id, "RULES_UNSURE", "Rules reading did not reconcile ("+strings.Join(reasons, "; ")+"); sending to the vision model", "",
+				rulesData, rulesType, rulesConf = data, cls.DocumentType, cls.Confidence
+				s.event(ctx, database, "", d.id, "RULES_UNSURE", "Rules reading did not reconcile ("+strings.Join(reasons, "; ")+"); sending to the vision model", "",
 					map[string]any{"problems": problems, "low_confidence": low})
 			}
 		}
 	}
 
 	// vision model
-	s.setStage(ctx, d.id, "EXTRACTION_PENDING", "vision model reading the document")
+	s.setStage(ctx, database, d.id, "EXTRACTION_PENDING", "vision model reading the document")
 	hint := ""
 	if d.declared.Valid {
 		hint = d.declared.String
 	}
 	vd, err := s.VLM.Extract(ctx, full, d.mime, hint)
 	if err != nil {
-		return err
+		if rulesData == nil || ctx.Err() != nil {
+			return err // already reads "vision model, page N: ..."
+		}
+		// Vision model unavailable: keep the rules reading, but send it to a person to confirm.
+		slog.Warn("vision model unavailable, saving rules reading for review", "document", d.id, "err", err)
+		docType, typeConf, terr := s.applyType(ctx, database, d, rulesType, rulesConf, tl.PageCount, "text layer + rules (vision model unavailable)",
+			map[string]any{"engine": "rules", "vision_error": err.Error()})
+		if terr != nil {
+			return terr
+		}
+		for _, f := range rulesData.Fields {
+			f.Confidence = min(f.Confidence, 0.5)
+		}
+		rulesData.Warnings = append(rulesData.Warnings, "vision model unavailable; the rules reading did not reconcile, so please check it against the original")
+		rulesData.ClassificationConfidence = typeConf
+		rulesData.ExtractedBy = "rules"
+		return s.saveAndMaterialize(ctx, database, d.id, docType, extract.MethodPDFText, tl.Text(), rulesData, nil, "")
 	}
 	detected, conf := vd.DocumentType, 0.9
 	if detected == "" {
@@ -192,20 +174,20 @@ func (s *Service) processWithVision(ctx context.Context, d docRow, full string) 
 			conf = 0.6 // model and document title disagree: let a person confirm the type
 		}
 	}
-	docType, typeConf, err := s.applyType(ctx, d, detected, conf, max(vd.Pages, tl.PageCount), "vision model "+s.VLM.Model,
+	docType, typeConf, err := s.applyType(ctx, database, d, detected, conf, max(vd.Pages, tl.PageCount), "vision model "+s.VLM.Model,
 		map[string]any{"engine": "vlm", "model": s.VLM.Model, "model_type": vd.DocumentType, "seconds": int(vd.Duration.Seconds())})
 	if err != nil {
 		return err
 	}
-	opt := parse.Options{BuyerGSTINs: s.Cfg.BuyerGSTINs, VendorGSTINs: s.vendorGSTINs(ctx)}
+	opt := parse.Options{BuyerGSTINs: s.Cfg.BuyerGSTINs, VendorGSTINs: s.vendorGSTINs(ctx, database)}
 	data := parse.FromVLM(vd, docType, tl.Lines, opt)
 	data.ClassificationConfidence = typeConf
 	data.ExtractedBy = "vlm:" + s.VLM.Model
-	return s.saveAndMaterialize(ctx, d.id, docType, "VLM", tl.Text(), data, nil, "")
+	return s.saveAndMaterialize(ctx, database, d.id, docType, "VLM", tl.Text(), data, nil, "")
 }
 
-func (s *Service) parseWithProfile(ctx context.Context, lines []extract.Line, docType string) *parse.Data {
-	opt := parse.Options{BuyerGSTINs: s.Cfg.BuyerGSTINs, VendorGSTINs: s.vendorGSTINs(ctx)}
+func (s *Service) parseWithProfile(ctx context.Context, database *sql.DB, lines []extract.Line, docType string) *parse.Data {
+	opt := parse.Options{BuyerGSTINs: s.Cfg.BuyerGSTINs, VendorGSTINs: s.vendorGSTINs(ctx, database)}
 	data := parse.Parse(lines, docType, opt)
 	g := ""
 	for _, k := range []string{"seller_gstin", "vendor_gstin"} {
@@ -217,7 +199,7 @@ func (s *Service) parseWithProfile(ctx context.Context, lines []extract.Line, do
 		return data
 	}
 	var raw []byte
-	err := s.DB.QueryRowContext(ctx, `SELECT p.field_patterns FROM vendor_extraction_profiles p JOIN vendors v USING (vendor_id)
+	err := database.QueryRowContext(ctx, `SELECT p.field_patterns FROM vendor_extraction_profiles p JOIN vendors v USING (vendor_id)
 		WHERE v.gstin=$1 AND p.document_type=$2 AND p.is_active`, g, docType).Scan(&raw)
 	if err != nil {
 		return data
@@ -232,12 +214,12 @@ func (s *Service) parseWithProfile(ctx context.Context, lines []extract.Line, do
 
 // saveAndMaterialize stores a new extraction version, then creates/updates the business record
 // and runs verification or relinking. Used by the pipeline and by manual corrections.
-func (s *Service) saveAndMaterialize(ctx context.Context, docID, docType, method, rawText string, data *parse.Data, ocrConf *float64, userID string) error {
-	tol, err := s.ActiveTolerance(ctx, s.DB)
+func (s *Service) saveAndMaterialize(ctx context.Context, database *sql.DB, docID, docType, method, rawText string, data *parse.Data, ocrConf *float64, userID string) error {
+	tol, err := s.ActiveTolerance(ctx, database)
 	if err != nil {
 		return err
 	}
-	s.boostWithMasterData(ctx, data)
+	s.boostWithMasterData(ctx, database, data)
 	overall := parse.OverallConfidence(data)
 	low := parse.LowConfidence(data, tol.MinExtractionConfidence)
 	if method == "MANUAL" {
@@ -248,13 +230,13 @@ func (s *Service) saveAndMaterialize(ctx context.Context, docID, docType, method
 		// the invoices checked against it) only becomes a record after a manager confirms it.
 		// The same applies to one that arrived by email: anyone can send an email.
 		actor, source := userID, ""
-		s.DB.QueryRowContext(ctx, `SELECT COALESCE(uploaded_by_user_id::text,''), source_type FROM documents WHERE document_id=$1`, docID).Scan(&actor, &source)
+		database.QueryRowContext(ctx, `SELECT COALESCE(uploaded_by_user_id::text,''), source_type FROM documents WHERE document_id=$1`, docID).Scan(&actor, &source)
 		if userID != "" {
 			actor = userID
 		}
 		if userID == "" && source == "EMAIL" {
 			low = append(low, "manager_confirmation")
-		} else if actor != "" && s.userRole(ctx, actor) == "AP_CLERK" {
+		} else if actor != "" && s.userRole(ctx, database, actor) == "AP_CLERK" {
 			if userID != "" {
 				return userErr(ErrForbidden, "only an AP manager or admin can confirm purchase orders and goods receipts")
 			}
@@ -266,7 +248,7 @@ func (s *Service) saveAndMaterialize(ctx context.Context, docID, docType, method
 	}
 	var invoiceID string
 	var poIDs []string
-	err = db.InTx(ctx, s.DB, func(tx *sql.Tx) error {
+	err = db.InTx(ctx, database, func(tx *sql.Tx) error {
 		var ver int
 		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(max(version),0)+1 FROM document_extractions WHERE document_id=$1`, docID).Scan(&ver); err != nil {
 			return err
@@ -344,25 +326,25 @@ func (s *Service) saveAndMaterialize(ctx context.Context, docID, docType, method
 		return err
 	}
 	if invoiceID != "" {
-		_, err = s.Verify(ctx, invoiceID, userID)
+		_, err = s.Verify(ctx, database, invoiceID, userID)
 		return err
 	}
 	if docType == "PO" || docType == "GRN" {
-		return s.relink(ctx)
+		return s.relink(ctx, database)
 	}
 	return nil
 }
 
 // boostWithMasterData raises GSTIN confidence when it exactly matches a vendor master record:
 // an independent confirmation that the extracted value is right.
-func (s *Service) boostWithMasterData(ctx context.Context, data *parse.Data) {
+func (s *Service) boostWithMasterData(ctx context.Context, database *sql.DB, data *parse.Data) {
 	for _, k := range []string{"seller_gstin", "vendor_gstin"} {
 		f := data.Fields[k]
 		if f == nil || f.Confidence >= 0.95 {
 			continue
 		}
 		var n int
-		if s.DB.QueryRowContext(ctx, `SELECT count(*) FROM vendors WHERE gstin=$1`, f.Value).Scan(&n) == nil && n > 0 {
+		if database.QueryRowContext(ctx, `SELECT count(*) FROM vendors WHERE gstin=$1`, f.Value).Scan(&n) == nil && n > 0 {
 			f.Confidence = 0.95
 			f.Source += "+vendor_master"
 		}
@@ -370,9 +352,9 @@ func (s *Service) boostWithMasterData(ctx context.Context, data *parse.Data) {
 }
 
 // CorrectExtraction saves user-corrected data as a new MANUAL extraction version and re-runs downstream steps.
-func (s *Service) CorrectExtraction(ctx context.Context, docID string, data *parse.Data, userID string) error {
+func (s *Service) CorrectExtraction(ctx context.Context, database *sql.DB, docID string, data *parse.Data, userID string) error {
 	var docType, raw string
-	err := s.DB.QueryRowContext(ctx, `SELECT d.document_type, COALESCE(e.raw_text,'') FROM documents d
+	err := database.QueryRowContext(ctx, `SELECT d.document_type, COALESCE(e.raw_text,'') FROM documents d
 		LEFT JOIN LATERAL (SELECT raw_text FROM document_extractions WHERE document_id=d.document_id ORDER BY version DESC LIMIT 1) e ON true
 		WHERE d.document_id=$1`, docID).Scan(&docType, &raw)
 	if err == sql.ErrNoRows {
@@ -386,7 +368,7 @@ func (s *Service) CorrectExtraction(ctx context.Context, docID string, data *par
 			return userErr(ErrInvalid, "unknown document_type")
 		}
 		docType = data.DocumentType
-		if _, err := s.DB.ExecContext(ctx, `UPDATE documents SET document_type=$2 WHERE document_id=$1`, docID, docType); err != nil {
+		if _, err := database.ExecContext(ctx, `UPDATE documents SET document_type=$2 WHERE document_id=$1`, docID, docType); err != nil {
 			return err
 		}
 	}
@@ -398,7 +380,7 @@ func (s *Service) CorrectExtraction(ctx context.Context, docID string, data *par
 	// Previous version tells which values the user actually changed.
 	var prevRaw []byte
 	prev := &parse.Data{}
-	if s.DB.QueryRowContext(ctx, `SELECT extracted_data FROM document_extractions WHERE document_id=$1 ORDER BY version DESC LIMIT 1`, docID).Scan(&prevRaw) == nil {
+	if database.QueryRowContext(ctx, `SELECT extracted_data FROM document_extractions WHERE document_id=$1 ORDER BY version DESC LIMIT 1`, docID).Scan(&prevRaw) == nil {
 		json.Unmarshal(prevRaw, prev)
 	}
 	for k, f := range data.Fields {
@@ -424,12 +406,12 @@ func (s *Service) CorrectExtraction(ctx context.Context, docID string, data *par
 			data.Items[i].Source = "manual"
 		}
 	}
-	return s.saveAndMaterialize(ctx, docID, docType, "MANUAL", raw, data, nil, userID)
+	return s.saveAndMaterialize(ctx, database, docID, docType, "MANUAL", raw, data, nil, userID)
 }
 
 // vendorGSTINs returns the vendor master GSTINs used to repair OCR-damaged GSTINs.
-func (s *Service) vendorGSTINs(ctx context.Context) []string {
-	rows, err := s.DB.QueryContext(ctx, `SELECT gstin FROM vendors WHERE gstin IS NOT NULL`)
+func (s *Service) vendorGSTINs(ctx context.Context, database *sql.DB) []string {
+	rows, err := database.QueryContext(ctx, `SELECT gstin FROM vendors WHERE gstin IS NOT NULL`)
 	if err != nil {
 		return nil
 	}
@@ -491,8 +473,8 @@ func (s *Service) dropStaleDocumentRecords(ctx context.Context, tx *sql.Tx, docI
 	return nil
 }
 
-func (s *Service) userRole(ctx context.Context, userID string) string {
+func (s *Service) userRole(ctx context.Context, database *sql.DB, userID string) string {
 	var role string
-	s.DB.QueryRowContext(ctx, `SELECT role FROM users WHERE user_id=$1`, userID).Scan(&role)
+	database.QueryRowContext(ctx, `SELECT role FROM users WHERE user_id=$1`, userID).Scan(&role)
 	return role
 }

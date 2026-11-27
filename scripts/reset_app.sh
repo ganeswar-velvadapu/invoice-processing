@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Start the whole app from scratch: frontend, API, worker and the local vision model (Ollama + Qwen3-VL).
+# Start the whole app from scratch: frontend, backend and the local vision model (Ollama + Qwen3-VL).
 #
-#   api       Go API on :8080 (logins, uploads, imports, approvals); runs the database migrations
-#   worker    background processing: reads documents (rules or vision model), runs the checks and
-#             matching, re-checks waiting invoices, and polls the email inbox when IMAP_* is set
+#   api       the Go backend on :8080: runs migrations, serves the API (logins, uploads, imports,
+#             approvals) and, in background goroutines, reads documents, re-checks invoices and
+#             polls the email inbox when IMAP_* is set
 #   frontend  Next.js UI on :3000
 #   ollama    local vision model for scans and handwriting; the model is downloaded once (~3 GB)
 #
@@ -38,9 +38,7 @@ docker compose version >/dev/null || { echo "docker compose not available"; exit
 [ -f .env ] || { echo ".env missing: cp .env.example .env and fill in DATABASE_URL, JWT_SECRET, ADMIN_*"; exit 1; }
 grep -qE '^DATABASE_URL=.+' .env || { echo "DATABASE_URL is not set in .env"; exit 1; }
 MODEL="$(envval VLM_MODEL)"; MODEL="${MODEL:-qwen3-vl:4b-instruct}"
-ENGINE="$(envval EXTRACTION_ENGINE)"; ENGINE="${ENGINE:-rules}"
-echo "extraction engine: $ENGINE · vision model: $MODEL"
-[ "$ENGINE" = "rules" ] && echo "note: EXTRACTION_ENGINE=rules, so scans and handwriting won't be read (use hybrid)"
+echo "vision model: $MODEL"
 
 if ! $KEEP_DATA; then
   if ! $YES; then
@@ -52,7 +50,8 @@ if ! $KEEP_DATA; then
   fi
 
   step "Stopping the app containers"
-  docker compose rm -sf api worker frontend
+  docker compose rm -sf api frontend
+  docker rm -f invoice-processing-worker-1 >/dev/null 2>&1 || true   # separate worker container of older versions
 
   step "Deleting uploaded documents"
   docker volume rm invoice-processing_storage 2>/dev/null || echo "   (no storage volume)"
@@ -99,8 +98,8 @@ else
   docker compose --profile vlm exec -T ollama ollama pull "$MODEL"
 fi
 
-step "Building and starting api, worker and frontend"
-docker compose --profile vlm up -d --build
+step "Building and starting the backend (api) and frontend"
+docker compose --profile vlm up -d --build --remove-orphans
 
 step "Waiting for the API (runs database migrations on start)"
 for _ in $(seq 1 90); do
@@ -119,7 +118,7 @@ curl -s -o /dev/null http://localhost:3000/login && echo "frontend is up" || ech
 step "Status"
 docker compose --profile vlm ps --format '{{.Service}}: {{.Status}}'
 sleep 3
-if docker compose logs worker 2>/dev/null | grep -q "email ingestion started"; then
+if docker compose logs api 2>/dev/null | grep -q "email ingestion started"; then
   echo "email ingestion: on ($(envval IMAP_USER))"
 else
   echo "email ingestion: off (set IMAP_HOST, IMAP_USER, IMAP_PASSWORD in .env to enable)"

@@ -23,7 +23,7 @@ export default function EmailInbox() {
       {s && (
         <div className={`mb-5 rounded-md border px-4 py-3 text-sm ${s.enabled ? "border-emerald-200 bg-emerald-50 text-emerald-900" : "border-zinc-200 bg-zinc-50 text-zinc-700"}`}>
           {s.enabled ? <>Watching <b>{s.mailbox}</b> · {s.received} email(s) received{s.last_received_at ? ` · last ${dateTime(s.last_received_at)}` : ""}. New mail is checked about every minute.</>
-            : <>Email ingestion is off. Set IMAP_HOST, IMAP_USER and IMAP_PASSWORD in <code>.env</code> and restart the worker.</>}
+            : <>Email ingestion is off. Set IMAP_HOST, IMAP_USER and IMAP_PASSWORD in <code>.env</code> and restart the app.</>}
         </div>
       )}
       {!data ? <Loading /> : data.items.length === 0 ? <Empty>No emails received yet. Send an invoice PDF to the mailbox.</Empty> : (
