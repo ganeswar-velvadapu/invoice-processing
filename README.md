@@ -98,7 +98,7 @@ After that, people take over: exceptions can be *checked* (explained, still coun
 | File | Contains |
 |---|---|
 | `cmd/server/main.go` | Program start: load config, open the database, apply migrations, call `api.RunApp` |
-| `internal/config/config.go` | Reads settings from `.env` |
+| `internal/config/config.go` | Reads settings from the environment (`backend/.env`) |
 | `internal/db/db.go` | Opens the PostgreSQL connection and applies migrations |
 | `migrations/*.sql` | Database tables, numbered `000001…000007`; new ones apply automatically on start |
 | `internal/api/api.go` | `RunApp` (sets up the app, starts background work, starts the HTTP server) and `Router` (every URL, who may call it, and which handler answers) |
@@ -184,7 +184,7 @@ Other folders:
 | `data/demo/` | Demo master data (CSV) and invoices in 5 layouts, including 2 handwritten and the email demo set ([guide](data/demo/README.md)) |
 | `data/EDGE_CASES.md` | The edge cases and how each is handled |
 | `backend/testdata/` | Fixtures for the automated end-to-end test |
-| `scripts/` | `reset_app.sh` (fresh start), `setup_vlm.sh` (vision model check), `e2e_smoke.py` (end-to-end test), `build_demo_set.py` (makes the demo data) |
+| `scripts/` | `reset_app.sh` (remove everything except the model), `setup_vlm.sh` (vision model check), `e2e_smoke.py` (end-to-end test), `build_demo_set.py` (makes the demo data) |
 | `screenshots/` | Images used in this README |
 
 ## 4. Setup
@@ -192,6 +192,8 @@ Other folders:
 Everything runs in Docker, so the only thing to install is **Docker**: [Docker Desktop](https://docs.docker.com/get-docker/) on macOS or Windows (on Windows, run the scripts from WSL2 or Git Bash), or Docker Engine with the Compose plugin on Linux. You also need a PostgreSQL database; a free [Neon](https://neon.tech) project works.
 
 Plan for about **15 GB of free disk** (the vision model and its server are downloaded once) and **16 GB of RAM** (the model is limited to 7 GB).
+
+Nothing else needs installing on your machine. Go, Poppler (`pdftotext` and `pdftoppm`, which the backend uses to read PDFs) and the vision model all live inside Docker images.
 
 ### Quick start: `start.sh`
 
@@ -201,11 +203,17 @@ bash start.sh
 
 On the first run it:
 1. checks that Docker is installed and running;
-2. creates `.env` and asks for the database connection string, an admin email and password, and (optionally) a Gmail address and app password for email ingestion. It generates the `JWT_SECRET` itself;
+2. creates `backend/.env` (and `frontend/.env`) and asks for the database connection string, an admin email and password, and (optionally) a Gmail address and app password for email ingestion. It generates the `JWT_SECRET` itself;
 3. downloads the Ollama image and the Qwen3-VL model if they aren't there yet;
 4. builds and starts the frontend and the backend.
 
-When it finishes, open http://localhost:3000, sign in as the admin, and create a clerk and a manager under **Settings**. Running `start.sh` again later just starts everything again: it asks nothing and keeps all data.
+When it finishes, open http://localhost:3000, sign in as the admin, and create a clerk and a manager under **Settings**.
+
+**Every run of `start.sh` starts clean:** it first runs `scripts/reset_app.sh` (removing the previous run's containers, images, uploaded documents and database data), then builds and starts everything, so you get an empty app with just the first admin. Your `.env` files, `data/`, Ollama and the downloaded model are kept. To start without deleting anything:
+
+```bash
+bash start.sh --keep-data
+```
 
 | Container | Purpose |
 |---|---|
@@ -213,26 +221,34 @@ When it finishes, open http://localhost:3000, sign in as the admin, and create a
 | `api` | The Go backend on :8080: applies migrations, serves the API, and in background goroutines reads documents, re-checks invoices and polls the email inbox |
 | `ollama` | Local vision model server (Qwen3-VL 4B) for scans and handwriting |
 
-### Fresh start: `scripts/reset_app.sh`
+### Remove everything: `scripts/reset_app.sh`
 
 ```bash
 bash scripts/reset_app.sh
 ```
 
-This **deletes all uploaded documents and drops every app table** in the database (it asks you to type `reset` first). Then it brings everything up: Ollama and the model are downloaded if missing, or restarted if present; the frontend and backend are rebuilt and started; and it reports each container's status and whether email ingestion is on. `.env`, `data/` and the downloaded model are always kept.
+This cleans the project off your machine and **starts nothing** (it asks you to type `reset` first).
 
-To (re)build and start everything without deleting anything:
+| Deleted | Kept |
+|---|---|
+| the containers (`api`, `frontend`, `ollama`) and the project's Docker network | the Ollama image and the downloaded model (so the next start doesn't download ~11 GB again) |
+| anything else still listening on ports 8080 and 3000 (e.g. a backend from `go run`, a frontend from `npm run dev`) | the `postgres:17-alpine` image (used to empty the database) |
+| the images built for this project (`invoice-processing-*`) | `backend/.env`, `frontend/.env` and `data/` |
+| uploaded documents (the `invoice-processing_storage` volume) | images you tagged for Docker Hub (`yourname/...`) |
+| every app table in the database | Docker's build cache (shared with other projects; clear it with `docker builder prune` if you want) |
 
-```bash
-bash scripts/reset_app.sh --keep-data
-```
+`start.sh` runs this automatically before each clean start. `bash start.sh --keep-data` skips it.
 
-### Configuration (`.env`)
+### Configuration (`backend/.env` and `frontend/.env`)
 
-`start.sh` fills in the required values. You can also edit `.env` by hand; see `.env.example`.
+`start.sh` fills in the required values. You can also edit the files by hand; see `backend/.env.example` and `frontend/.env.example`.
+
+**`backend/.env`**: everything the Go backend needs.
 - **Required:** `DATABASE_URL` (Neon, `sslmode=require`), `JWT_SECRET`, `ADMIN_EMAIL`, `ADMIN_PASSWORD`.
 - **Recommended:** `BUYER_GSTINS` (your company's GSTIN) and `GSTIN_CHECKSUM=strict`.
 - **Email (optional):** `IMAP_HOST=imap.gmail.com`, `IMAP_USER`, `IMAP_PASSWORD`. For Gmail, turn on 2-Step Verification and create an **App password** at myaccount.google.com/apppasswords.
+
+**`frontend/.env`**: only `BACKEND_URL`, where the frontend forwards `/api` requests (`http://localhost:8080` for `npm run dev`). In Docker it is set at build time to `http://api:8080`, so this file isn't used there.
 
 ### Everyday commands
 
@@ -257,6 +273,33 @@ docker compose up -d --build api frontend
 ```
 
 > Never run `docker compose down -v`: it deletes the uploaded files and the downloaded model.
+
+### Run without Docker (for development)
+
+To run the backend straight from source, install these on your machine:
+- **Go 1.26** or newer;
+- **Poppler**:
+  - Fedora: `sudo dnf install poppler-utils`
+  - Debian/Ubuntu: `sudo apt install poppler-utils`
+  - macOS: `brew install poppler`
+- **Node.js 20+**, for the frontend.
+
+The vision model can still run in Docker. It's reachable at `localhost:11434`:
+```bash
+docker compose --profile vlm up -d ollama
+```
+
+Start the backend. It reads `backend/.env`, and `OLLAMA_URL` points it at that local Ollama:
+```bash
+cd backend && OLLAMA_URL=http://localhost:11434 go run ./cmd/server
+```
+
+Start the frontend in a second terminal. It forwards `/api` to `localhost:8080`:
+```bash
+cd frontend && npm install && npm run dev
+```
+
+Then open http://localhost:3000.
 
 ### Try it
 

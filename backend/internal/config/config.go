@@ -88,7 +88,7 @@ func list(k string) []string {
 }
 
 func Load() (*Config, error) {
-	LoadDotEnv(".env", "../.env")
+	LoadDotEnv(".env") // backend/.env when run from the backend folder; in Docker, compose passes the settings instead
 	var err error
 	c := &Config{
 		DatabaseURL:   env("DATABASE_URL", ""),

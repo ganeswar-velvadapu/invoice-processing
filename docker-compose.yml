@@ -1,9 +1,9 @@
-# Local development stack. PostgreSQL is external (Neon): set DATABASE_URL in .env.
+# Local development stack. PostgreSQL is external (Neon): set DATABASE_URL in backend/.env.
 # Original files live in a named volume mounted at /data/storage (outside the source tree) — include it in backups.
 services:
   api:
     build: ./backend
-    env_file: .env
+    env_file: backend/.env
     environment:
       STORAGE_DIR: /data/storage
     volumes:
