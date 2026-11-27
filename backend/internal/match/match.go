@@ -327,8 +327,8 @@ func Run(in Input) Result {
 			g.Reason = fmt.Sprintf("%s: invoiced %s; cumulative %s within %s accepted.", label, qty(inThis), qty(cum), qty(pi.QuantityAccepted))
 		default:
 			g.Status, g.Class, g.ExceptionCode = model.Fail, model.ClassBlocking, "QUANTITY_EXCEEDS_GRN"
-			g.Reason = fmt.Sprintf("%s: invoice bills %s units but GRN confirms only %s accepted units (%s already invoiced).",
-				label, qty(inThis), qty(pi.QuantityAccepted), qty(pi.QuantityInvoicedPrior))
+			g.Reason = fmt.Sprintf("%s: invoice bills %s but only %s remain to be billed against the GRN (%s accepted, %s already invoiced).",
+				label, qty(inThis), qty(math.Max(0, pi.QuantityAccepted-pi.QuantityInvoicedPrior)), qty(pi.QuantityAccepted), qty(pi.QuantityInvoicedPrior))
 		}
 		r.Checks = append(r.Checks, g)
 	}
