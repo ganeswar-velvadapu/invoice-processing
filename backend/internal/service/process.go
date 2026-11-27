@@ -12,7 +12,7 @@ import (
 	"invoiceproc/internal/db"
 	"invoiceproc/internal/extract"
 	"invoiceproc/internal/parse"
-	"invoiceproc/internal/util"
+	"invoiceproc/internal/utils"
 )
 
 type docRow struct {
@@ -238,7 +238,7 @@ func (s *Service) saveAndMaterialize(ctx context.Context, database *sql.DB, docI
 			low = append(low, "manager_confirmation")
 		} else if actor != "" && s.userRole(ctx, database, actor) == "AP_CLERK" {
 			if userID != "" {
-				return userErr(ErrForbidden, "only an AP manager or admin can confirm purchase orders and goods receipts")
+				return utils.UserErr(utils.ErrForbidden, "only an AP manager or admin can confirm purchase orders and goods receipts")
 			}
 			low = append(low, "manager_confirmation")
 		}
@@ -358,14 +358,14 @@ func (s *Service) CorrectExtraction(ctx context.Context, database *sql.DB, docID
 		LEFT JOIN LATERAL (SELECT raw_text FROM document_extractions WHERE document_id=d.document_id ORDER BY version DESC LIMIT 1) e ON true
 		WHERE d.document_id=$1`, docID).Scan(&docType, &raw)
 	if err == sql.ErrNoRows {
-		return ErrNotFound
+		return utils.ErrNotFound
 	}
 	if err != nil {
 		return err
 	}
 	if data.DocumentType != "" && data.DocumentType != docType {
 		if !allowedTypes[data.DocumentType] {
-			return userErr(ErrInvalid, "unknown document_type")
+			return utils.UserErr(utils.ErrInvalid, "unknown document_type")
 		}
 		docType = data.DocumentType
 		if _, err := database.ExecContext(ctx, `UPDATE documents SET document_type=$2 WHERE document_id=$1`, docID, docType); err != nil {
@@ -430,7 +430,7 @@ func (s *Service) vendorGSTINs(ctx context.Context, database *sql.DB) []string {
 // e.g. a PO saved as "WZ-202" before the reviewer corrected it to "PUR-2024-00004". Records that are
 // already referenced (matched invoices, linked GRNs) are kept and reported instead of deleted.
 func (s *Service) dropStaleDocumentRecords(ctx context.Context, tx *sql.Tx, docID, docType, keepNumber string) error {
-	keep := util.NormalizeRef(keepNumber)
+	keep := utils.NormalizeRef(keepNumber)
 	switch docType {
 	case "PO":
 		rows, err := tx.QueryContext(ctx, `SELECT purchase_order_id, po_number,

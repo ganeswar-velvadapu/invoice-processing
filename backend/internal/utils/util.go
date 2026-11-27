@@ -1,5 +1,5 @@
 // Package util holds small helpers shared across packages: normalisation, rounding, nullable values.
-package util
+package utils
 
 import (
 	"database/sql"

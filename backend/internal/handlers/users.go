@@ -9,7 +9,6 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"invoiceproc/internal/auth"
-	"invoiceproc/internal/service"
 	"invoiceproc/internal/utils"
 )
 
@@ -81,7 +80,7 @@ func (h *Handler) UpdateUser(c *gin.Context) {
 		return
 	}
 	if n, _ := r.RowsAffected(); n == 0 {
-		utils.Fail(c, service.ErrNotFound)
+		utils.Fail(c, utils.ErrNotFound)
 		return
 	}
 	utils.OK(c, gin.H{"updated": true})

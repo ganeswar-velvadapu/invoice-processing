@@ -5,14 +5,14 @@ import (
 
 	"invoiceproc/internal/classify"
 	"invoiceproc/internal/db"
-	"invoiceproc/internal/util"
+	"invoiceproc/internal/utils"
 )
 
 // findPOByRef resolves a PO reference read from a document. Exact (normalised) matches win.
 // Otherwise an OCR slip is tolerated only within the same vendor: at most one differing character
 // (two for 12+ character numbers) and exactly one candidate. approx reports a tolerant match.
 func findPOByRef(ctx context.Context, q db.Querier, ref, vendorID, vendorGSTIN string) (id, number string, approx bool) {
-	norm := util.NormalizeRef(ref)
+	norm := utils.NormalizeRef(ref)
 	if norm == "" {
 		return "", "", false
 	}

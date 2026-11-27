@@ -13,7 +13,7 @@ import (
 	"github.com/xuri/excelize/v2"
 
 	"invoiceproc/internal/parse"
-	"invoiceproc/internal/util"
+	"invoiceproc/internal/utils"
 )
 
 // Tabular import: CSV files and Excel workbooks become rows, and one mapping turns rows into the
@@ -127,14 +127,14 @@ func ParseRows(kind, where string, rows [][]string, dateSerial bool) (Procuremen
 	var out ProcurementImport
 	cols, ok := importColumns[kind]
 	if !ok {
-		return out, userErr(ErrInvalid, "kind must be vendors, purchase_orders or goods_receipt_notes")
+		return out, utils.UserErr(utils.ErrInvalid, "kind must be vendors, purchase_orders or goods_receipt_notes")
 	}
 	// skip leading blank rows; first non-blank row is the header
 	for len(rows) > 0 && blankRow(rows[0]) {
 		rows = rows[1:]
 	}
 	if len(rows) < 2 {
-		return out, userErr(ErrInvalid, where+": no data rows")
+		return out, utils.UserErr(utils.ErrInvalid, where+": no data rows")
 	}
 	idx := map[string]int{}
 	var unknown []string
@@ -163,7 +163,7 @@ func ParseRows(kind, where string, rows [][]string, dateSerial bool) (Procuremen
 		if len(unknown) > 0 {
 			msg += fmt.Sprintf(" (unrecognised columns: %s)", strings.Join(unknown, ", "))
 		}
-		return out, userErr(ErrInvalid, msg)
+		return out, utils.UserErr(utils.ErrInvalid, msg)
 	}
 	errs := &ImportRowError{}
 	get := func(row []string, k string) string {
@@ -231,7 +231,7 @@ func ParseRows(kind, where string, rows [][]string, dateSerial bool) (Procuremen
 			out.Vendors = append(out.Vendors, VendorInput{LegalName: name, GSTIN: g, Address: get(row, "address"),
 				IsApproved: ap == "" || ap == "true" || ap == "yes" || ap == "1" || ap == "y", VendorStatus: strings.ToUpper(get(row, "vendor_status"))})
 		case "purchase_orders":
-			n := util.NormalizeRef(get(row, "po_number"))
+			n := utils.NormalizeRef(get(row, "po_number"))
 			if n == "" {
 				errs.Problems = append(errs.Problems, fmt.Sprintf("%s row %d: po_number is empty", where, rowNo))
 				continue
@@ -249,7 +249,7 @@ func ParseRows(kind, where string, rows [][]string, dateSerial bool) (Procuremen
 				Description: get(row, "description"), HSNSAC: get(row, "hsn_sac"), QuantityOrdered: num(row, "quantity_ordered", rowNo, true),
 				UnitOfMeasure: get(row, "unit_of_measure"), UnitPrice: num(row, "unit_price", rowNo, true), TaxRate: num(row, "tax_rate", rowNo, false)})
 		case "goods_receipt_notes":
-			n := util.NormalizeRef(get(row, "grn_number"))
+			n := utils.NormalizeRef(get(row, "grn_number"))
 			if n == "" {
 				errs.Problems = append(errs.Problems, fmt.Sprintf("%s row %d: grn_number is empty", where, rowNo))
 				continue
@@ -276,7 +276,7 @@ func ParseRows(kind, where string, rows [][]string, dateSerial bool) (Procuremen
 		}
 	}
 	if len(errs.Problems) > 0 {
-		return out, userErr(ErrInvalid, errs.Error())
+		return out, utils.UserErr(utils.ErrInvalid, errs.Error())
 	}
 	return out, nil
 }
@@ -297,7 +297,7 @@ func ParseCSV(kind string, r io.Reader) (ProcurementImport, error) {
 	cr.FieldsPerRecord = -1
 	rows, err := cr.ReadAll()
 	if err != nil {
-		return ProcurementImport{}, userErr(ErrInvalid, "invalid CSV: "+err.Error())
+		return ProcurementImport{}, utils.UserErr(utils.ErrInvalid, "invalid CSV: "+err.Error())
 	}
 	return ParseRows(kind, "CSV", rows, false)
 }
@@ -322,7 +322,7 @@ func ParseWorkbook(r io.Reader, defaultKind string) (ProcurementImport, error) {
 	var out ProcurementImport
 	f, err := excelize.OpenReader(r)
 	if err != nil {
-		return out, userErr(ErrInvalid, "not a readable .xlsx workbook: "+err.Error())
+		return out, utils.UserErr(utils.ErrInvalid, "not a readable .xlsx workbook: "+err.Error())
 	}
 	defer f.Close()
 	sheets := f.GetSheetList()
@@ -338,7 +338,7 @@ func ParseWorkbook(r io.Reader, defaultKind string) (ProcurementImport, error) {
 		}
 		rows, err := f.GetRows(sh, excelize.Options{RawCellValue: true})
 		if err != nil {
-			return out, userErr(ErrInvalid, fmt.Sprintf("sheet %q: %v", sh, err))
+			return out, utils.UserErr(utils.ErrInvalid, fmt.Sprintf("sheet %q: %v", sh, err))
 		}
 		part, err := ParseRows(kind, "sheet "+strconvQuote(sh), rows, true)
 		if err != nil {
@@ -351,10 +351,10 @@ func ParseWorkbook(r io.Reader, defaultKind string) (ProcurementImport, error) {
 		out.GoodsReceiptNotes = append(out.GoodsReceiptNotes, part.GoodsReceiptNotes...)
 	}
 	if len(errs) > 0 {
-		return out, userErr(ErrInvalid, strings.Join(errs, "\n"))
+		return out, utils.UserErr(utils.ErrInvalid, strings.Join(errs, "\n"))
 	}
 	if used == 0 {
-		return out, userErr(ErrInvalid, "no sheet named like Vendors, Purchase Orders or Goods Receipt Notes (or choose the kind for a single-sheet file)")
+		return out, utils.UserErr(utils.ErrInvalid, "no sheet named like Vendors, Purchase Orders or Goods Receipt Notes (or choose the kind for a single-sheet file)")
 	}
 	return out, nil
 }
@@ -380,7 +380,7 @@ func templateHeader(kind string) []string {
 // TemplateCSV returns a CSV template (header + one example row) for a kind.
 func TemplateCSV(kind string) ([]byte, error) {
 	if _, ok := importColumns[kind]; !ok {
-		return nil, userErr(ErrInvalid, "kind must be vendors, purchase_orders or goods_receipt_notes")
+		return nil, utils.UserErr(utils.ErrInvalid, "kind must be vendors, purchase_orders or goods_receipt_notes")
 	}
 	var b bytes.Buffer
 	w := csv.NewWriter(&b)

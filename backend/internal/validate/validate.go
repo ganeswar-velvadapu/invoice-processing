@@ -10,7 +10,7 @@ import (
 
 	"invoiceproc/internal/gstin"
 	"invoiceproc/internal/model"
-	"invoiceproc/internal/util"
+	"invoiceproc/internal/utils"
 )
 
 type Input struct {
@@ -136,7 +136,7 @@ func Run(in Input) []model.Check {
 		reason := "Supplier GSTIN matches approved vendor " + v.LegalName + "."
 		st := model.Pass
 		cls := ""
-		if inv.SellerName != "" && util.TextSimilarity(inv.SellerName, v.LegalName) < 0.3 {
+		if inv.SellerName != "" && utils.TextSimilarity(inv.SellerName, v.LegalName) < 0.3 {
 			st, cls = model.Warning, model.ClassWarn
 			reason = fmt.Sprintf("Supplier GSTIN matches vendor %q but the printed name %q differs.", v.LegalName, inv.SellerName)
 		}
@@ -175,7 +175,7 @@ func Run(in Input) []model.Check {
 			exp := *it.Quantity**it.UnitPrice - it.Discount
 			if math.Abs(exp-*it.TaxableValue) > taxTol {
 				badMath = append(badMath, fmt.Sprintf("%s: %s × %s − %s = %s, invoice shows %s", ln,
-					util.FormatQty(*it.Quantity), money(*it.UnitPrice), money(it.Discount), money(exp), money(*it.TaxableValue)))
+					utils.FormatQty(*it.Quantity), money(*it.UnitPrice), money(it.Discount), money(exp), money(*it.TaxableValue)))
 			}
 			sumTaxable += *it.TaxableValue
 		} else {
@@ -201,7 +201,7 @@ func Run(in Input) []model.Check {
 	}
 
 	// TAX_ARITHMETIC: structure (intra vs inter state) and totals
-	cg, sg, ig := util.F(inv.CGST), util.F(inv.SGST), util.F(inv.IGST)
+	cg, sg, ig := utils.F(inv.CGST), utils.F(inv.SGST), utils.F(inv.IGST)
 	var taxIssues []string
 	sellerState, buyerState := stateOf(inv.SellerGSTIN), stateOf(inv.BuyerGSTIN)
 	if sellerState != "" && buyerState != "" {
@@ -216,7 +216,7 @@ func Run(in Input) []model.Check {
 			taxIssues = append(taxIssues, fmt.Sprintf("inter-state supply (%s→%s) should charge IGST, but CGST/SGST %s is charged", sellerState, buyerState, money(cg+sg)))
 		}
 	}
-	totalTax := util.F(inv.TotalTax)
+	totalTax := utils.F(inv.TotalTax)
 	if inv.TotalTax != nil && cg+sg+ig > 0 && math.Abs(cg+sg+ig-totalTax) > taxTol {
 		taxIssues = append(taxIssues, fmt.Sprintf("CGST+SGST+IGST = %s but total tax = %s", money(cg+sg+ig), money(totalTax)))
 	}
@@ -240,24 +240,24 @@ func Run(in Input) []model.Check {
 
 	// INVOICE_ARITHMETIC — each failing comparison carries its own expected/actual values
 	if inv.GrandTotal != nil {
-		taxable := util.F(inv.TaxableAmount)
+		taxable := utils.F(inv.TaxableAmount)
 		if inv.TaxableAmount == nil && allTaxable {
 			taxable = sumTaxable
 		}
-		exp := taxable + totalTax + util.F(inv.OtherCharges) + util.F(inv.RoundOff)
+		exp := taxable + totalTax + utils.F(inv.OtherCharges) + utils.F(inv.RoundOff)
 		type issue struct{ what, expected, actual string }
 		var issues []issue
 		if math.Abs(exp-*inv.GrandTotal) > taxTol {
 			issues = append(issues, issue{fmt.Sprintf("taxable %s + tax %s + other %s + round-off %s = %s, but grand total is %s",
-				money(taxable), money(totalTax), money(util.F(inv.OtherCharges)), money(util.F(inv.RoundOff)), money(exp), money(*inv.GrandTotal)),
+				money(taxable), money(totalTax), money(utils.F(inv.OtherCharges)), money(utils.F(inv.RoundOff)), money(exp), money(*inv.GrandTotal)),
 				"grand total " + money(exp), "grand total " + money(*inv.GrandTotal)})
 		}
 		if allTaxable && len(inv.Items) > 0 && inv.TaxableAmount != nil && math.Abs(sumTaxable-*inv.TaxableAmount) > taxTol {
 			issues = append(issues, issue{fmt.Sprintf("sum of line taxable values %s ≠ taxable total %s", money(sumTaxable), money(*inv.TaxableAmount)),
 				"lines sum to " + money(*inv.TaxableAmount), "lines sum to " + money(sumTaxable)})
 		}
-		if math.Abs(util.F(inv.RoundOff)) > 1.0 {
-			issues = append(issues, issue{fmt.Sprintf("round-off %s exceeds ₹1", money(util.F(inv.RoundOff))), "round-off ≤ 1.00", "round-off " + money(util.F(inv.RoundOff))})
+		if math.Abs(utils.F(inv.RoundOff)) > 1.0 {
+			issues = append(issues, issue{fmt.Sprintf("round-off %s exceeds ₹1", money(utils.F(inv.RoundOff))), "round-off ≤ 1.00", "round-off " + money(utils.F(inv.RoundOff))})
 		}
 		if len(issues) > 0 {
 			var whats []string

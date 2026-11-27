@@ -13,7 +13,7 @@ import (
 	"invoiceproc/internal/decision"
 	"invoiceproc/internal/match"
 	"invoiceproc/internal/model"
-	"invoiceproc/internal/util"
+	"invoiceproc/internal/utils"
 	"invoiceproc/internal/validate"
 )
 
@@ -45,7 +45,7 @@ func (s *Service) loadInvoice(ctx context.Context, q db.Querier, id string) (*in
 		&r.InvoiceID, &r.DocumentID, &num, &idate, &ddate, &vendor, &sname, &sg, &bname, &bg, textArray(&r.POReferences), &cur,
 		&sub, &taxable, &cg, &sgst, &ig, &other, &ro, &tt, &gt, &conf, &status, &r.createdAt, &r.isRevision, &dup)
 	if err == sql.ErrNoRows {
-		return nil, ErrNotFound
+		return nil, utils.ErrNotFound
 	}
 	if err != nil {
 		return nil, err
@@ -58,8 +58,8 @@ func (s *Service) loadInvoice(ctx context.Context, q db.Querier, id string) (*in
 	if ddate.Valid {
 		r.DueDate = &ddate.Time
 	}
-	r.Subtotal, r.TaxableAmount, r.CGST, r.SGST, r.IGST = util.PtrF(sub), util.PtrF(taxable), util.PtrF(cg), util.PtrF(sgst), util.PtrF(ig)
-	r.OtherCharges, r.RoundOff, r.TotalTax, r.GrandTotal = util.PtrF(other), util.PtrF(ro), util.PtrF(tt), util.PtrF(gt)
+	r.Subtotal, r.TaxableAmount, r.CGST, r.SGST, r.IGST = utils.PtrF(sub), utils.PtrF(taxable), utils.PtrF(cg), utils.PtrF(sgst), utils.PtrF(ig)
+	r.OtherCharges, r.RoundOff, r.TotalTax, r.GrandTotal = utils.PtrF(other), utils.PtrF(ro), utils.PtrF(tt), utils.PtrF(gt)
 	r.ExtractionConfidence = conf.Float64
 
 	rows, err := q.QueryContext(ctx, `SELECT invoice_item_id, line_number, item_code, description, hsn_sac, quantity, unit_of_measure,
@@ -75,7 +75,7 @@ func (s *Service) loadInvoice(ctx context.Context, q db.Querier, id string) (*in
 			&tv, &tr, &ta, &lt); err != nil {
 			return nil, err
 		}
-		it.Quantity, it.UnitPrice, it.TaxableValue, it.TaxRate, it.TaxAmount, it.LineTotal = util.PtrF(qn), util.PtrF(up), util.PtrF(tv), util.PtrF(tr), util.PtrF(ta), util.PtrF(lt)
+		it.Quantity, it.UnitPrice, it.TaxableValue, it.TaxRate, it.TaxAmount, it.LineTotal = utils.PtrF(qn), utils.PtrF(up), utils.PtrF(tv), utils.PtrF(tr), utils.PtrF(ta), utils.PtrF(lt)
 		r.Items = append(r.Items, it)
 	}
 	return r, rows.Err()
@@ -179,7 +179,7 @@ func (s *Service) Verify(ctx context.Context, database *sql.DB, invoiceID, userI
 			for rows.Next() {
 				var n string
 				rows.Scan(&n)
-				if util.TextSimilarity(n, inv.SellerName) >= 0.6 {
+				if utils.TextSimilarity(n, inv.SellerName) >= 0.6 {
 					byName = s.loadVendor(ctx, database, "legal_name=$1", n)
 					break
 				}
@@ -205,12 +205,12 @@ func (s *Service) Verify(ctx context.Context, database *sql.DB, invoiceID, userI
 		database.QueryRowContext(ctx, `SELECT invoice_id, invoice_number, invoice_status FROM invoices
 			WHERE seller_gstin=$1 AND invoice_number_normalized=$2 AND financial_year=$3 AND invoice_id<>$4
 			AND invoice_status<>'REJECTED' AND created_at < $5 ORDER BY created_at LIMIT 1`,
-			inv.SellerGSTIN, util.NormalizeDocNumber(inv.InvoiceNumber), util.FinancialYear(*inv.InvoiceDate), invoiceID, inv.createdAt).
+			inv.SellerGSTIN, utils.NormalizeDocNumber(inv.InvoiceNumber), utils.FinancialYear(*inv.InvoiceDate), invoiceID, inv.createdAt).
 			Scan(&dup.BusinessKeyInvoiceID, &dup.BusinessKeyNumber, &dup.BusinessKeyStatus)
 		if inv.GrandTotal != nil {
 			rows, _ := database.QueryContext(ctx, `SELECT invoice_id FROM invoices WHERE seller_gstin=$1 AND invoice_date=$2 AND grand_total=$3
 				AND invoice_id<>$4 AND invoice_status<>'REJECTED' AND invoice_number_normalized IS DISTINCT FROM $5`,
-				inv.SellerGSTIN, *inv.InvoiceDate, *inv.GrandTotal, invoiceID, util.NormalizeDocNumber(inv.InvoiceNumber))
+				inv.SellerGSTIN, *inv.InvoiceDate, *inv.GrandTotal, invoiceID, utils.NormalizeDocNumber(inv.InvoiceNumber))
 			if rows != nil {
 				for rows.Next() {
 					var id string
@@ -228,7 +228,7 @@ func (s *Service) Verify(ctx context.Context, database *sql.DB, invoiceID, userI
 	// matching inputs
 	var refs []string
 	for _, r := range inv.POReferences {
-		if n := util.NormalizeRef(r); n != "" {
+		if n := utils.NormalizeRef(r); n != "" {
 			refs = append(refs, n)
 		}
 	}
@@ -259,7 +259,7 @@ func (s *Service) Verify(ctx context.Context, database *sql.DB, invoiceID, userI
 		}
 		found := map[string]bool{}
 		for _, p := range mi.ReferencedPOs {
-			found[util.NormalizeRef(p.PONumber)] = true
+			found[utils.NormalizeRef(p.PONumber)] = true
 		}
 		var approxIDs []string
 		mi.ApproxRefs = map[string]string{}

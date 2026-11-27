@@ -7,7 +7,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 
@@ -48,26 +47,6 @@ func New(cfg *config.Config) (*Service, error) {
 		Cfg: cfg,
 	}, nil
 }
-
-var (
-	ErrNotFound    = errors.New("not found")
-	ErrConflict    = errors.New("conflict")
-	ErrForbidden   = errors.New("forbidden")
-	ErrInvalid     = errors.New("invalid request")
-	ErrUnsupported = errors.New("unsupported file type")
-	ErrTooLarge    = errors.New("file too large")
-)
-
-// UserError carries a message safe to show to API clients.
-type UserError struct {
-	Kind error
-	Msg  string
-}
-
-func (e *UserError) Error() string { return e.Msg }
-func (e *UserError) Unwrap() error { return e.Kind }
-
-func userErr(kind error, msg string) error { return &UserError{kind, msg} }
 
 var typeMap = pgtype.NewMap()
 

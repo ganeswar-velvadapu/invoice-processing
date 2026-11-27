@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"invoiceproc/internal/utils"
 
 	"invoiceproc/internal/db"
 	"invoiceproc/internal/gstin"
@@ -59,7 +60,7 @@ func (s *Service) Import(ctx context.Context, database *sql.DB, in ProcurementIm
 		return nil
 	})
 	if err != nil {
-		return nil, userErr(ErrInvalid, "import failed, nothing was saved: "+err.Error())
+		return nil, utils.UserErr(utils.ErrInvalid, "import failed, nothing was saved: "+err.Error())
 	}
 	return res, s.relink(ctx, database)
 }

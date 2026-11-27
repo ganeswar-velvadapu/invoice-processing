@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"invoiceproc/internal/utils"
 	"strings"
 
 	"invoiceproc/internal/db"
@@ -11,7 +12,7 @@ import (
 
 func requireReason(reason string) error {
 	if len(strings.TrimSpace(reason)) < 5 {
-		return userErr(ErrInvalid, "a reason of at least 5 characters is required")
+		return utils.UserErr(utils.ErrInvalid, "a reason of at least 5 characters is required")
 	}
 	return nil
 }
@@ -20,7 +21,7 @@ func (s *Service) invoiceState(ctx context.Context, q db.Querier, id string) (st
 	var d sql.NullString
 	err = q.QueryRowContext(ctx, `SELECT invoice_status, decision, document_id FROM invoices WHERE invoice_id=$1 FOR UPDATE`, id).Scan(&status, &d, &docID)
 	if err == sql.ErrNoRows {
-		err = ErrNotFound
+		err = utils.ErrNotFound
 	}
 	return status, d.String, docID, err
 }
@@ -44,7 +45,7 @@ func (s *Service) Approve(ctx context.Context, database *sql.DB, invoiceID, user
 			return err
 		}
 		if finalStatuses[status] {
-			return userErr(ErrConflict, "invoice is already "+status)
+			return utils.UserErr(utils.ErrConflict, "invoice is already "+status)
 		}
 		againstSystem := dec != "APPROVE"
 		switch {
@@ -52,10 +53,10 @@ func (s *Service) Approve(ctx context.Context, database *sql.DB, invoiceID, user
 		case againstSystem && status == "AWAITING_APPROVAL":
 			// the clerk checked every exception and recommends approval; the manager accepts responsibility
 			if err := requireReason(note); err != nil {
-				return userErr(ErrInvalid, fmt.Sprintf("the system decision is %s: approving needs a reason (min 5 characters)", dec))
+				return utils.UserErr(utils.ErrInvalid, fmt.Sprintf("the system decision is %s: approving needs a reason (min 5 characters)", dec))
 			}
 		default:
-			return userErr(ErrConflict, fmt.Sprintf("system decision is %s (status %s): send it for approval first, or use an override with a reason", dec, status))
+			return utils.UserErr(utils.ErrConflict, fmt.Sprintf("system decision is %s (status %s): send it for approval first, or use an override with a reason", dec, status))
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE invoices SET invoice_status='APPROVED', requires_human_review=false, updated_at=now() WHERE invoice_id=$1`, invoiceID); err != nil {
 			return err
@@ -94,7 +95,7 @@ func (s *Service) Reject(ctx context.Context, database *sql.DB, invoiceID, userI
 			return err
 		}
 		if status == "REJECTED" || status == "PAID" || status == "PAYMENT_PENDING" {
-			return userErr(ErrConflict, "invoice is already "+status)
+			return utils.UserErr(utils.ErrConflict, "invoice is already "+status)
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE invoices SET invoice_status='REJECTED', requires_human_review=false, updated_at=now() WHERE invoice_id=$1`, invoiceID); err != nil {
 			return err
@@ -112,7 +113,7 @@ func (s *Service) Override(ctx context.Context, database *sql.DB, invoiceID, use
 	defer wakeUp()
 	target = strings.ToUpper(target)
 	if !overrideTargets[target] {
-		return userErr(ErrInvalid, "target_status must be one of APPROVED, REJECTED, ON_HOLD, REVIEW_REQUIRED")
+		return utils.UserErr(utils.ErrInvalid, "target_status must be one of APPROVED, REJECTED, ON_HOLD, REVIEW_REQUIRED")
 	}
 	if err := requireReason(reason); err != nil {
 		return err
@@ -123,7 +124,7 @@ func (s *Service) Override(ctx context.Context, database *sql.DB, invoiceID, use
 			return err
 		}
 		if status == "PAID" || status == "PAYMENT_PENDING" {
-			return userErr(ErrConflict, "invoice is already in payment ("+status+")")
+			return utils.UserErr(utils.ErrConflict, "invoice is already in payment ("+status+")")
 		}
 		var open []string
 		rows, _ := tx.QueryContext(ctx, `SELECT exception_code FROM invoice_exceptions WHERE invoice_id=$1 AND exception_status IN ('OPEN','ASSIGNED')`, invoiceID)
@@ -151,7 +152,7 @@ func (s *Service) UpdateException(ctx context.Context, database *sql.DB, excID, 
 	if err := database.QueryRowContext(ctx, `SELECT invoice_id, exception_code, exception_status FROM invoice_exceptions WHERE invoice_exception_id=$1`, excID).
 		Scan(&invoiceID, &code, &status); err != nil {
 		if err == sql.ErrNoRows {
-			return "", ErrNotFound
+			return "", utils.ErrNotFound
 		}
 		return "", err
 	}
@@ -184,7 +185,7 @@ func (s *Service) UpdateException(ctx context.Context, database *sql.DB, excID, 
 		q = `UPDATE invoice_exceptions SET exception_status='ASSIGNED', assigned_to_user_id=$2 WHERE invoice_exception_id=$1`
 		args = append(args, nullable(assignee))
 	default:
-		return "", userErr(ErrInvalid, "action must be CHECK, RESOLVE, WAIVE, REOPEN or ASSIGN")
+		return "", utils.UserErr(utils.ErrInvalid, "action must be CHECK, RESOLVE, WAIVE, REOPEN or ASSIGN")
 	}
 	if _, err := database.ExecContext(ctx, q, args...); err != nil {
 		return "", err
@@ -204,7 +205,7 @@ func (s *Service) SetPOMatch(ctx context.Context, database *sql.DB, invoiceID, p
 		var poNum string
 		if action != "CLEAR" {
 			if err := tx.QueryRowContext(ctx, `SELECT po_number FROM purchase_orders WHERE purchase_order_id=$1`, poID).Scan(&poNum); err != nil {
-				return userErr(ErrNotFound, "purchase order not found")
+				return utils.UserErr(utils.ErrNotFound, "purchase order not found")
 			}
 		}
 		switch action {
@@ -224,7 +225,7 @@ func (s *Service) SetPOMatch(ctx context.Context, database *sql.DB, invoiceID, p
 			}
 			s.event(ctx, tx, invoiceID, "", "PO_MATCH_CLEARED", "Manual PO selections cleared", userID, nil)
 		default:
-			return userErr(ErrInvalid, "action must be CONFIRM, REJECT or CLEAR")
+			return utils.UserErr(utils.ErrInvalid, "action must be CONFIRM, REJECT or CLEAR")
 		}
 		return nil
 	})
@@ -254,10 +255,10 @@ func (s *Service) ReturnToClerk(ctx context.Context, database *sql.DB, invoiceID
 			return err
 		}
 		if finalStatuses[status] {
-			return userErr(ErrConflict, "invoice is already "+status)
+			return utils.UserErr(utils.ErrConflict, "invoice is already "+status)
 		}
 		if status == "RETURNED" {
-			return userErr(ErrConflict, "invoice is already returned to the clerk")
+			return utils.UserErr(utils.ErrConflict, "invoice is already returned to the clerk")
 		}
 		if assignee == "" { // default: the clerk who uploaded it
 			tx.QueryRowContext(ctx, `SELECT COALESCE(d.uploaded_by_user_id::text,'') FROM documents d JOIN users u ON u.user_id=d.uploaded_by_user_id
@@ -285,7 +286,7 @@ func (s *Service) Resubmit(ctx context.Context, database *sql.DB, invoiceID, use
 			return err
 		}
 		if status != "RETURNED" {
-			return userErr(ErrConflict, "only invoices returned by a manager can be resubmitted (status is "+status+")")
+			return utils.UserErr(utils.ErrConflict, "only invoices returned by a manager can be resubmitted (status is "+status+")")
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE invoices SET invoice_status='REVIEW_REQUIRED', updated_at=now() WHERE invoice_id=$1`, invoiceID); err != nil {
 			return err
@@ -305,7 +306,7 @@ func (s *Service) Resubmit(ctx context.Context, database *sql.DB, invoiceID, use
 func (s *Service) SubmitForApproval(ctx context.Context, database *sql.DB, invoiceID, userID, recommendation, note string) error {
 	recommendation = strings.ToUpper(recommendation)
 	if recommendation != "APPROVE" && recommendation != "REJECT" {
-		return userErr(ErrInvalid, "recommendation must be APPROVE or REJECT")
+		return utils.UserErr(utils.ErrInvalid, "recommendation must be APPROVE or REJECT")
 	}
 	if err := requireReason(note); err != nil {
 		return err
@@ -319,10 +320,10 @@ func (s *Service) SubmitForApproval(ctx context.Context, database *sql.DB, invoi
 		case "ON_HOLD", "REVIEW_REQUIRED", "READY_FOR_VERIFICATION", "RETURNED":
 		case "PENDING_PO_MATCH", "PENDING_GRN", "PENDING_DOCUMENTS":
 			if recommendation == "APPROVE" {
-				return userErr(ErrConflict, "the purchase order or goods receipt is not in yet: an invoice cannot be recommended for approval before it can be matched")
+				return utils.UserErr(utils.ErrConflict, "the purchase order or goods receipt is not in yet: an invoice cannot be recommended for approval before it can be matched")
 			}
 		default:
-			return userErr(ErrConflict, "invoice is "+status+" and cannot be sent for approval")
+			return utils.UserErr(utils.ErrConflict, "invoice is "+status+" and cannot be sent for approval")
 		}
 		if recommendation == "APPROVE" {
 			var open []string
@@ -336,7 +337,7 @@ func (s *Service) SubmitForApproval(ctx context.Context, database *sql.DB, invoi
 				rows.Close()
 			}
 			if len(open) > 0 {
-				return userErr(ErrConflict, "check every exception first (mark it checked with a note, or resolve it): still open: "+strings.Join(open, ", "))
+				return utils.UserErr(utils.ErrConflict, "check every exception first (mark it checked with a note, or resolve it): still open: "+strings.Join(open, ", "))
 			}
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE invoices SET invoice_status='AWAITING_APPROVAL', submitted_by_user_id=$2, submitted_at=now(),

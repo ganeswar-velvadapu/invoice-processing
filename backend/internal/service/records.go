@@ -13,7 +13,7 @@ import (
 	"invoiceproc/internal/db"
 	"invoiceproc/internal/gstin"
 	"invoiceproc/internal/parse"
-	"invoiceproc/internal/util"
+	"invoiceproc/internal/utils"
 )
 
 // ---------------------------------------------------------------- procurement inputs (import + documents)
@@ -114,7 +114,7 @@ func poInputFromData(d *parse.Data, docID string) (POInput, error) {
 	}
 	for _, it := range d.Items {
 		in.Items = append(in.Items, POItemInput{LineNumber: it.LineNumber, ItemCode: it.ItemCode, Description: it.Description, HSNSAC: it.HSNSAC,
-			QuantityOrdered: util.F(it.Quantity), UnitOfMeasure: it.Unit, UnitPrice: util.F(it.UnitPrice), TaxRate: util.F(it.TaxRate)})
+			QuantityOrdered: utils.F(it.Quantity), UnitOfMeasure: it.Unit, UnitPrice: utils.F(it.UnitPrice), TaxRate: utils.F(it.TaxRate)})
 	}
 	return in, nil
 }
@@ -132,7 +132,7 @@ func grnInputFromData(d *parse.Data, docID string) (GRNInput, error) {
 	}
 	for _, it := range d.Items {
 		in.Items = append(in.Items, GRNItemInput{LineNumber: it.LineNumber, ItemCode: it.ItemCode, Description: it.Description,
-			QuantityReceived: util.F(it.QuantityReceived), QuantityAccepted: util.F(it.QuantityAccepted), QuantityRejected: util.F(it.QuantityRejected),
+			QuantityReceived: utils.F(it.QuantityReceived), QuantityAccepted: utils.F(it.QuantityAccepted), QuantityRejected: utils.F(it.QuantityRejected),
 			UnitOfMeasure: it.Unit})
 	}
 	return in, nil
@@ -156,11 +156,11 @@ func dateOrNil(s string) any {
 func (s *Service) UpsertVendor(ctx context.Context, q db.Querier, v VendorInput) (string, error) {
 	g := gstin.Normalize(v.GSTIN)
 	if strings.TrimSpace(v.LegalName) == "" {
-		return "", userErr(ErrInvalid, "legal_name is required")
+		return "", utils.UserErr(utils.ErrInvalid, "legal_name is required")
 	}
 	if g != "" {
 		if r, _ := gstin.Check(g); !r.Valid {
-			return "", userErr(ErrInvalid, "invalid GSTIN "+g+": "+r.Reason)
+			return "", utils.UserErr(utils.ErrInvalid, "invalid GSTIN "+g+": "+r.Reason)
 		}
 	}
 	if v.VendorStatus == "" {
@@ -191,11 +191,11 @@ func vendorIDByGSTIN(ctx context.Context, q db.Querier, g string) string {
 
 func (s *Service) materializeInvoice(ctx context.Context, tx *sql.Tx, docID string, d *parse.Data, conf float64, userID string) (string, error) {
 	num := fieldVal(d, "invoice_number")
-	norm := util.NormalizeDocNumber(num)
+	norm := utils.NormalizeDocNumber(num)
 	date := fieldDate(d, "invoice_date")
 	fy := ""
 	if date != nil {
-		fy = util.FinancialYear(*date)
+		fy = utils.FinancialYear(*date)
 	}
 	seller := gstin.Normalize(fieldVal(d, "seller_gstin"))
 	vendorID := vendorIDByGSTIN(ctx, tx, seller)
@@ -310,9 +310,9 @@ func firstNonEmpty(s ...string) string {
 // upsertPO creates or updates a PO. Imported (master) data is never overwritten by document extraction:
 // an uploaded PO document whose number already exists is only linked to that record.
 func (s *Service) upsertPO(ctx context.Context, q db.Querier, in POInput, userID string) (string, error) {
-	norm := util.NormalizeRef(in.PONumber)
+	norm := utils.NormalizeRef(in.PONumber)
 	if norm == "" {
-		return "", userErr(ErrInvalid, "po_number is required")
+		return "", utils.UserErr(utils.ErrInvalid, "po_number is required")
 	}
 	if in.Source == "" {
 		in.Source = "IMPORT"
@@ -341,7 +341,7 @@ func (s *Service) upsertPO(ctx context.Context, q db.Querier, in POInput, userID
 		for _, it := range in.Items {
 			t += it.QuantityOrdered * it.UnitPrice
 		}
-		t = util.Round2(t)
+		t = utils.Round2(t)
 		total = &t
 	}
 	if id == "" {
@@ -369,7 +369,7 @@ func (s *Service) upsertPO(ctx context.Context, q db.Querier, in POInput, userID
 			hsn_sac=EXCLUDED.hsn_sac, quantity_ordered=EXCLUDED.quantity_ordered, unit_of_measure=EXCLUDED.unit_of_measure,
 			unit_price=EXCLUDED.unit_price, tax_rate=EXCLUDED.tax_rate, line_total=EXCLUDED.line_total`,
 			id, ln, it.ItemCode, it.Description, it.HSNSAC, it.QuantityOrdered, it.UnitOfMeasure, it.UnitPrice, it.TaxRate,
-			util.Round2(it.QuantityOrdered*it.UnitPrice)); err != nil {
+			utils.Round2(it.QuantityOrdered*it.UnitPrice)); err != nil {
 			return "", err
 		}
 	}
@@ -381,9 +381,9 @@ func (s *Service) upsertPO(ctx context.Context, q db.Querier, in POInput, userID
 // ---------------------------------------------------------------- goods receipts
 
 func (s *Service) upsertGRN(ctx context.Context, q db.Querier, in GRNInput, userID string) (string, error) {
-	norm := util.NormalizeRef(in.GRNNumber)
+	norm := utils.NormalizeRef(in.GRNNumber)
 	if norm == "" {
-		return "", userErr(ErrInvalid, "grn_number is required")
+		return "", utils.UserErr(utils.ErrInvalid, "grn_number is required")
 	}
 	if in.Source == "" {
 		in.Source = "IMPORT"
@@ -497,11 +497,11 @@ func (s *Service) linkGRN(ctx context.Context, q db.Querier, grnID, poID string)
 		for _, p := range pois {
 			sc := 0.0
 			switch {
-			case g.code != "" && util.NormalizeRef(g.code) == util.NormalizeRef(p.code):
+			case g.code != "" && utils.NormalizeRef(g.code) == utils.NormalizeRef(p.code):
 				sc = 1
 			default:
-				sc = util.TextSimilarity(g.desc, p.desc)
-				if p.code != "" && strings.Contains(util.NormalizeRef(g.desc), util.NormalizeRef(p.code)) {
+				sc = utils.TextSimilarity(g.desc, p.desc)
+				if p.code != "" && strings.Contains(utils.NormalizeRef(g.desc), utils.NormalizeRef(p.code)) {
 					sc = 0.9
 				}
 				if sc < 0.5 && g.code == "" && g.line == p.line && len(gris) == len(pois) {

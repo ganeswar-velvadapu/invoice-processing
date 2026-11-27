@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"invoiceproc/internal/utils"
 	"io"
 	"log/slog"
 	"mime"
@@ -190,7 +191,7 @@ func (s *Service) ingestEmail(ctx context.Context, database *sql.DB, env *imap.E
 	for i, a := range atts {
 		res, err := s.Ingest(ctx, database, IngestRequest{Reader: bytes.NewReader(a.data), OriginalFilename: a.name, SourceType: "EMAIL",
 			SourceReference: fmt.Sprintf("%s#%d", msgID, i+1), EmailMessageID: emailID})
-		var ue *UserError
+		var ue *utils.UserError
 		if errors.As(err, &ue) {
 			skipped = append(skipped, a.name+": "+ue.Msg)
 			continue

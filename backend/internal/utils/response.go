@@ -8,8 +8,6 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-
-	"invoiceproc/internal/service"
 )
 
 // OK sends 200 with v as JSON.
@@ -25,30 +23,30 @@ func NotFound(c *gin.Context) {
 	c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": "not found"})
 }
 
-// Fail turns an error into the right HTTP status. Messages meant for users (service.UserError) are
+// Fail turns an error into the right HTTP status. Messages meant for users (UserError) are
 // shown; anything unexpected becomes 500 "internal error" and the real error only goes to the log.
 func Fail(c *gin.Context, err error) {
-	var ue *service.UserError
+	var ue *UserError
 	status := http.StatusInternalServerError
 	msg := "internal error"
 	switch {
 	case errors.As(err, &ue):
 		msg = ue.Msg
 		switch {
-		case errors.Is(err, service.ErrNotFound):
+		case errors.Is(err, ErrNotFound):
 			status = http.StatusNotFound
-		case errors.Is(err, service.ErrForbidden):
+		case errors.Is(err, ErrForbidden):
 			status = http.StatusForbidden
-		case errors.Is(err, service.ErrConflict):
+		case errors.Is(err, ErrConflict):
 			status = http.StatusConflict
-		case errors.Is(err, service.ErrUnsupported):
+		case errors.Is(err, ErrUnsupported):
 			status = http.StatusUnsupportedMediaType
-		case errors.Is(err, service.ErrTooLarge):
+		case errors.Is(err, ErrTooLarge):
 			status = http.StatusRequestEntityTooLarge
 		default:
 			status = http.StatusBadRequest
 		}
-	case errors.Is(err, service.ErrNotFound), errors.Is(err, sql.ErrNoRows):
+	case errors.Is(err, ErrNotFound), errors.Is(err, sql.ErrNoRows):
 		status, msg = http.StatusNotFound, "not found"
 	default:
 		slog.Error("request failed", "path", c.Request.URL.Path, "err", err)

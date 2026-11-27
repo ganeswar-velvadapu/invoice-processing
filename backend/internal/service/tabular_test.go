@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"errors"
+	"invoiceproc/internal/utils"
 	"strings"
 	"testing"
 
@@ -36,7 +37,7 @@ func TestCSVRowErrorsSaveNothing(t *testing.T) {
 		"GRN-1,PO-1,abc,0,0\n" +
 		"GRN-2,PO-1,10,8,5\n"
 	_, err := ParseCSV("goods_receipt_notes", strings.NewReader(csv))
-	if err == nil || !errors.Is(err, ErrInvalid) {
+	if err == nil || !errors.Is(err, utils.ErrInvalid) {
 		t.Fatalf("expected a validation error, got %v", err)
 	}
 	msg := err.Error()

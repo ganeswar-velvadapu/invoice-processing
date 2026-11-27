@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"invoiceproc/internal/utils"
 	"io"
 	"os"
 	"strings"
@@ -55,16 +56,16 @@ func (s *Service) Ingest(ctx context.Context, database *sql.DB, req IngestReques
 	}
 	req.DeclaredType = strings.ToUpper(strings.TrimSpace(req.DeclaredType))
 	if req.DeclaredType != "" && !allowedTypes[req.DeclaredType] {
-		return nil, userErr(ErrInvalid, "unknown document_type "+req.DeclaredType)
+		return nil, utils.UserErr(utils.ErrInvalid, "unknown document_type "+req.DeclaredType)
 	}
 	br := bufio.NewReaderSize(io.LimitReader(req.Reader, s.Cfg.MaxUploadBytes+1), 4096)
 	head, _ := br.Peek(16)
 	if len(head) == 0 {
-		return nil, userErr(ErrInvalid, "file is empty")
+		return nil, utils.UserErr(utils.ErrInvalid, "file is empty")
 	}
 	mime, ext := sniff(head)
 	if mime == "" {
-		return nil, userErr(ErrUnsupported, "unsupported file type: only PDF, PNG, JPEG and TIFF are accepted")
+		return nil, utils.UserErr(utils.ErrUnsupported, "unsupported file type: only PDF, PNG, JPEG and TIFF are accepted")
 	}
 	rel, size, sum, err := s.Store.Save(br, ext)
 	if err != nil {
@@ -74,7 +75,7 @@ func (s *Service) Ingest(ctx context.Context, database *sql.DB, req IngestReques
 		if p, err := s.Store.Path(rel); err == nil {
 			os.Remove(p)
 		}
-		return nil, userErr(ErrTooLarge, fmt.Sprintf("file exceeds the %d MB limit", s.Cfg.MaxUploadBytes>>20))
+		return nil, utils.UserErr(utils.ErrTooLarge, fmt.Sprintf("file exceeds the %d MB limit", s.Cfg.MaxUploadBytes>>20))
 	}
 	name := req.OriginalFilename
 	if len(name) > 255 {
@@ -118,7 +119,7 @@ func (s *Service) Ingest(ctx context.Context, database *sql.DB, req IngestReques
 func (s *Service) Reprocess(ctx context.Context, database *sql.DB, documentID, forceType, userID string) error {
 	forceType = strings.ToUpper(forceType)
 	if forceType != "" && !allowedTypes[forceType] {
-		return userErr(ErrInvalid, "unknown document_type "+forceType)
+		return utils.UserErr(utils.ErrInvalid, "unknown document_type "+forceType)
 	}
 	defer wakeUp()
 	return db.InTx(ctx, database, func(tx *sql.Tx) error {
@@ -129,7 +130,7 @@ func (s *Service) Reprocess(ctx context.Context, database *sql.DB, documentID, f
 			return err
 		}
 		if n, _ := r.RowsAffected(); n == 0 {
-			return ErrNotFound
+			return utils.ErrNotFound
 		}
 		s.event(ctx, tx, "", documentID, "REPROCESS_REQUESTED", "Reprocessing requested", userID, map[string]any{"forced_type": forceType})
 		return nil

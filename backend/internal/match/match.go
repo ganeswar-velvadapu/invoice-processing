@@ -9,7 +9,7 @@ import (
 	"strings"
 
 	"invoiceproc/internal/model"
-	"invoiceproc/internal/util"
+	"invoiceproc/internal/utils"
 )
 
 const (
@@ -62,7 +62,7 @@ type Result struct {
 }
 
 func money(f float64) string { return fmt.Sprintf("%.2f", f) }
-func qty(f float64) string   { return util.FormatQty(f) }
+func qty(f float64) string   { return utils.FormatQty(f) }
 
 func vendorMatches(po model.PurchaseOrder, inv *model.Invoice, vendorID string) bool {
 	if vendorID != "" && po.VendorID != "" {
@@ -73,13 +73,13 @@ func vendorMatches(po model.PurchaseOrder, inv *model.Invoice, vendorID string) 
 
 // lineScore rates how well an invoice line corresponds to a PO line (0..1) and explains why.
 func lineScore(it model.InvoiceItem, pi model.POItem) (float64, string) {
-	if it.ItemCode != "" && pi.ItemCode != "" && util.NormalizeRef(it.ItemCode) == util.NormalizeRef(pi.ItemCode) {
+	if it.ItemCode != "" && pi.ItemCode != "" && utils.NormalizeRef(it.ItemCode) == utils.NormalizeRef(pi.ItemCode) {
 		return 1.0, "item code " + pi.ItemCode
 	}
 	s := 0.0
 	var why []string
-	sim := util.TextSimilarity(it.Description, pi.Description)
-	if pi.ItemCode != "" && strings.Contains(util.NormalizeRef(it.Description), util.NormalizeRef(pi.ItemCode)) {
+	sim := utils.TextSimilarity(it.Description, pi.Description)
+	if pi.ItemCode != "" && strings.Contains(utils.NormalizeRef(it.Description), utils.NormalizeRef(pi.ItemCode)) {
 		sim = math.Max(sim, 0.9)
 	}
 	s += 0.6 * sim
@@ -212,7 +212,7 @@ func Run(in Input) Result {
 		}
 		// allocate across equally good PO lines (same item on several POs / schedule lines)
 		left := *it.Quantity
-		price := util.F(it.UnitPrice)
+		price := utils.F(it.UnitPrice)
 		for k, c := range cands {
 			if left <= 0 {
 				break
@@ -232,7 +232,7 @@ func Run(in Input) Result {
 			thisQty[c.ref.item.POItemID] += take
 			lineOf[c.ref.item.POItemID] = append(lineOf[c.ref.item.POItemID], it.LineNumber)
 			r.Allocations = append(r.Allocations, Allocation{it.InvoiceItemID, it.LineNumber, c.ref.item.POItemID, c.ref.po.PONumber,
-				c.ref.item.LineNumber, util.Round3(take), util.Round2(take * price), c.why})
+				c.ref.item.LineNumber, utils.Round3(take), utils.Round2(take * price), c.why})
 		}
 	}
 	if len(unmatched) > 0 {
@@ -389,7 +389,7 @@ func candidateSearch(in Input, r *Result) []model.PurchaseOrder {
 		return nil
 	}
 	top := scores[0]
-	conf := util.Round2(top.total / n)
+	conf := utils.Round2(top.total / n)
 	coversAll := top.matched == len(inv.Items)
 	ambiguous := len(scores) > 1 && scores[1].total >= top.total-0.15*n
 	for i, s := range scores {
@@ -399,7 +399,7 @@ func candidateSearch(in Input, r *Result) []model.PurchaseOrder {
 		if i >= 5 {
 			break
 		}
-		r.POMatches = append(r.POMatches, POMatch{s.po.PurchaseOrderID, s.po.PONumber, MethodRule, StatusCandidate, util.Round2(s.total / n),
+		r.POMatches = append(r.POMatches, POMatch{s.po.PurchaseOrderID, s.po.PONumber, MethodRule, StatusCandidate, utils.Round2(s.total / n),
 			append([]string{"same vendor"}, s.why...)})
 	}
 	switch {
